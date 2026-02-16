@@ -1,75 +1,44 @@
 /**
  * Unified AI Service
- * Routes requests to Gemini or Ollama based on AI_PROVIDER setting
+ * Uses Gemini only for all AI features (chat, analyze, recommendations, rate-item, try-on)
  */
 
-const { AI_PROVIDER } = require('../config/aiProvider');
 const geminiService = require('./geminiService');
-const ollamaService = require('./ollamaService');
+const geminiTryOn = require('./geminiTryOn');
 
 /**
- * Chat with AI (unified interface)
+ * Chat with AI
  */
 async function chatWithAI(message, wardrobeContext = null, conversationHistory = [], profileImage = null) {
-  if (AI_PROVIDER === 'ollama') {
-    return await ollamaService.chatWithOllama(message, wardrobeContext, conversationHistory);
-  } else {
-    return await geminiService.chatWithAI(message, wardrobeContext, conversationHistory, profileImage);
-  }
+  return await geminiService.chatWithGemini(message, wardrobeContext, conversationHistory);
 }
 
 /**
- * Analyze clothing image (unified interface)
- * @param {object} options - { forWardrobe: true } to use WARDROBE_AI_PROVIDER (default: ollama for wardrobe)
+ * Analyze clothing image
  */
 async function analyzeClothingImage(imageBuffer, imageMimeType, options = {}) {
-  const useOllama = options.forWardrobe && (process.env.WARDROBE_AI_PROVIDER || 'ollama') === 'ollama';
-  if (useOllama) {
-    const result = await ollamaService.analyzeClothingImageOllama(imageBuffer, imageMimeType);
-    if (!result.success && result.fallback === 'gemini') {
-      return await geminiService.analyzeClothingImage(imageBuffer, imageMimeType);
-    }
-    return result;
-  }
-  if (AI_PROVIDER === 'ollama') {
-    return await ollamaService.analyzeClothingImageOllama(imageBuffer, imageMimeType);
-  }
-  return await geminiService.analyzeClothingImage(imageBuffer, imageMimeType);
+  return await geminiService.analyzeClothingImageGemini(imageBuffer, imageMimeType);
 }
 
 /**
- * Get outfit recommendations (unified interface)
+ * Get outfit recommendations
  */
 async function getOutfitRecommendations(wardrobeItems, occasion, bodyShape = null, weather = null) {
-  if (AI_PROVIDER === 'ollama') {
-    return await ollamaService.getOutfitRecommendationsOllama(wardrobeItems, occasion, bodyShape, weather);
-  } else {
-    return await geminiService.getOutfitRecommendations(wardrobeItems, occasion, bodyShape, weather);
-  }
+  return await geminiService.getOutfitRecommendationsGemini(wardrobeItems, occasion, bodyShape, weather);
 }
 
 /**
- * Rate clothing item (unified interface)
+ * Rate clothing item
  */
 async function rateClothingItem(itemDescription, itemImage = null, bodyShape = null) {
-  // Rate item is only available in Gemini for now
-  // TODO: Implement for Ollama if needed
-  if (AI_PROVIDER === 'ollama') {
-    return {
-      success: false,
-      error: 'Rating feature not yet implemented for Ollama. Please use Gemini provider.',
-      fallback: 'gemini'
-    };
-  } else {
-    return await geminiService.rateClothingItem(itemDescription, itemImage, bodyShape);
-  }
+  return await geminiService.rateClothingItemGemini(itemDescription, itemImage, bodyShape);
 }
 
 /**
- * Virtual try-on: composite garment onto user's photo (Gemini 2.5 Flash Image)
+ * Virtual try-on
  */
 async function virtualTryOn(userPhotoDataUrl, garmentImageBuffer, garmentMimeType) {
-  return require('./geminiService').virtualTryOn(userPhotoDataUrl, garmentImageBuffer, garmentMimeType);
+  return await geminiTryOn.virtualTryOnGemini(userPhotoDataUrl, garmentImageBuffer, garmentMimeType);
 }
 
 module.exports = {

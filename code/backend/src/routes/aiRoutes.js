@@ -109,6 +109,8 @@ router.post('/try-on', upload.fields([
   { name: 'image', maxCount: 1 },
   { name: 'userPhoto', maxCount: 1 }
 ]), async (req, res) => {
+  req.setTimeout(900000); // 15 min - local image gen can take a long time
+  res.setTimeout(900000);
   try {
     const garmentFile = req.files?.image?.[0];
     if (!garmentFile || !garmentFile.buffer) {

@@ -20,12 +20,15 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 
-// Rate limiting
+// Rate limiting (skip try-on: image gen is slow, don't rate limit it)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100 // limit each IP to 100 requests per windowMs
 });
-app.use('/api/', limiter);
+app.use('/api/', (req, res, next) => {
+  if (req.method === 'POST' && req.originalUrl.includes('/try-on')) return next();
+  return limiter(req, res, next);
+});
 
 // Middleware
 app.use(cors({
@@ -84,7 +87,8 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`🚀 Fashion App API server running on port ${PORT}`);
   console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔑 Gemini API: ${process.env.GEMINI_API_KEY ? 'Configured ✓' : 'Missing ✗'}`);
+  console.log(`🤖 AI: Gemini (all features)`);
+  if (process.env.GEMINI_API_KEY) console.log(`🔑 Gemini API key configured`);
   console.log(`\n📋 Available endpoints:`);
   console.log(`\n🔐 Authentication:`);
   console.log(`  POST /api/auth/register`);

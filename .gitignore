@@ -1,0 +1,13 @@
+# Environment and secrets (never commit)
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+venv/
+__pycache__/*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

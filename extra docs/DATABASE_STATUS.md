@@ -40,8 +40,8 @@ If you want items to persist:
 2. **Update `.env`:**
    ```
    DATABASE_URL=mongodb://localhost:27017/fashion-app
-   # OR for Atlas:
-   DATABASE_URL=mongodb+srv://username:password@cluster.mongodb.net/fashion-app
+   # OR for Atlas: get connection string from Atlas UI, never commit it
+   # DATABASE_URL=<your-atlas-uri-from-atlas-dashboard>
    ```
 
 3. **Restart backend:**

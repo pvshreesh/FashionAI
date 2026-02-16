@@ -523,7 +523,7 @@
                         const userPhotoFile = dataURLtoFile(profilePhoto, 'user.jpg');
                         form.append('userPhoto', userPhotoFile);
                         const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 150000);
+                        const timeoutId = setTimeout(() => controller.abort(), 900000); // 15 min - local image gen can take a long time
                         const response = await fetch(`${API_BASE}/api/ai/try-on`, {
                             method: 'POST',
                             body: form,

@@ -35,20 +35,14 @@ No local install. Free tier is enough for development.
 
 1. **Database** → **Connect** on your cluster.
 2. **Connect your application** → Driver: **Node.js**.
-3. Copy the URI. It looks like:
-   ```text
-   mongodb+srv://fashionapp:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
-   ```
-4. Replace `<password>` with your actual password (special chars encoded, e.g. `@` → `%40`).
+3. Copy the URI from the Atlas dashboard (Driver: Node.js).
+4. Replace `<password>` in the URI with your actual password (encode special chars: `@` → `%40`, `#` → `%23`).
 
 ### 5. Add it to the project
 
 1. Open `code/backend/.env`.
-2. Set:
-   ```env
-   DATABASE_URL=mongodb+srv://fashionapp:YOUR_PASSWORD@cluster0.xxxxx.mongodb.net/fashion-app?retryWrites=true&w=majority
-   ```
-3. Use your real URI; ensure the database name is `fashion-app` (or change it in the URI).
+2. Set `DATABASE_URL` to your connection string from Atlas. **Never commit `.env` or paste real credentials into docs.**
+3. Ensure the database name in the URI is `fashion-app` (or change it).
 
 ### 6. Restart the backend
 

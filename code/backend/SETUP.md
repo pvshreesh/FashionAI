@@ -2,67 +2,38 @@
 
 ## ✅ Current Status
 
-The backend code is fully set up and ready! All Gemini API integration code is in place.
+The backend uses **Gemini only** for all AI features: chat, image analysis, recommendations, style rating, and virtual try-on.
 
 ## ✅ API Key Configuration
 
-**Using Google AI Studio API Key** (Recommended - Works immediately!)
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
+2. Create or get your API key
+3. Copy `code/backend/.env.example` to `code/backend/.env`
+4. Set `GEMINI_API_KEY=your_key_here` in `.env`
 
-1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. Get your API key (works immediately, no setup needed)
-3. Add to `.env` file: `GEMINI_API_KEY=your_key_here`
-
-**Note**: Google AI Studio API keys work directly without enabling any APIs in Google Cloud Console.
-
-### Current Model Configuration
-
-The app is configured to use:
-- **gemini-2.5-flash** - Fast, cost-effective (recommended for MVP)
-- **gemini-2.5-pro** - Better quality (can switch in `src/config/gemini.js`)
-
-Available models with Google AI Studio:
-- `gemini-2.5-flash` (recommended)
-- `gemini-2.5-pro`
-- `gemini-2.0-flash`
+Or run: `node setup-env.js` (or `.\setup-env.ps1` on Windows) to create `.env` from the template.
 
 ## 🚀 Starting the Server
 
-Once the API is enabled:
-
 ```bash
-cd backend
+cd code/backend
+npm install
 npm run dev
 ```
 
-Server will start on `http://localhost:3000`
+Server runs on `http://localhost:3000`
 
-## 🧪 Test the Connection
+## 📝 API Endpoints
 
-```bash
-node test-gemini.js
-```
+- `POST /api/ai/chat` - AI fashion chat assistant
+- `POST /api/ai/try-on` - Virtual try-on (garment + user photo)
+- `POST /api/ai/analyze-image` - Clothing image analysis
+- `POST /api/ai/recommendations` - Outfit recommendations from wardrobe
+- `POST /api/ai/rate-item` - Style rating for items
 
-## 📝 API Endpoints Ready
+## 🔧 Optional: Model Configuration
 
-All endpoints are implemented and ready to use:
-
-- ✅ `POST /api/ai/chat` - AI chat assistant
-- ✅ `POST /api/ai/analyze-image` - Clothing image analysis
-- ✅ `POST /api/ai/recommendations` - Outfit recommendations
-- ✅ `POST /api/ai/rate-item` - Style rating
-
-## 🔧 Model Configuration
-
-Currently using `gemini-1.5-flash` (fast and cost-effective for MVP).
-
-To change models, edit `src/config/gemini.js`:
-- `gemini-1.5-flash` - Fast, cheaper (recommended for MVP)
-- `gemini-1.5-pro` - Better quality, more expensive
-
-## 📚 Next Steps
-
-1. Enable Generative AI API in Google Cloud
-2. Test the connection
-3. Start building the mobile app
-4. Add database integration
-5. Add user authentication
+Edit `.env` to override defaults:
+- `GEMINI_CHAT_MODEL` – default: `gemini-1.5-flash`
+- `GEMINI_VISION_MODEL` – default: `gemini-1.5-flash`
+- `GEMINI_VISION_MAX_DIM` – max image dimension for vision (default: 1024)

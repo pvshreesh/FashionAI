@@ -1,6 +1,6 @@
 /**
  * Ollama Local LLM Service
- * Alternative to Gemini API - runs models locally
+ * Local LLM service - runs models locally
  * 
  * Setup:
  * 1. Install Ollama: https://ollama.com/download
@@ -12,10 +12,24 @@
  */
 
 const axios = require('axios');
+const sharp = require('sharp');
 
 const OLLAMA_BASE = process.env.OLLAMA_BASE || 'http://localhost:11434';
 const CHAT_MODEL = process.env.OLLAMA_CHAT_MODEL || 'llama3:8b';
 const VISION_MODEL = process.env.OLLAMA_VISION_MODEL || 'llava';
+
+/** Options to limit RAM: smaller num_ctx = less memory. Default 2048 to avoid freezing. */
+function getOllamaOptions(overrides = {}) {
+  const numCtx = parseInt(process.env.OLLAMA_NUM_CTX, 10) || 2048;
+  const numThread = process.env.OLLAMA_NUM_THREAD ? parseInt(process.env.OLLAMA_NUM_THREAD, 10) : undefined;
+  const numGpu = process.env.OLLAMA_NUM_GPU !== undefined ? parseInt(process.env.OLLAMA_NUM_GPU, 10) : undefined;
+  return {
+    num_ctx: numCtx,
+    ...(numThread !== undefined && { num_thread: numThread }),
+    ...(numGpu !== undefined && { num_gpu: numGpu }),
+    ...overrides
+  };
+}
 
 /**
  * Check if Ollama is running
@@ -46,7 +60,7 @@ async function chatWithOllama(userMessage, wardrobeContext = null, conversationH
       return {
         success: false,
         error: 'Ollama is not running. Please start Ollama service.',
-        fallback: 'gemini' // Suggest fallback to Gemini
+        fallback: null
       };
     }
 
@@ -84,11 +98,7 @@ Be friendly, helpful, and provide practical fashion advice.`;
       model: CHAT_MODEL,
       messages: messages,
       stream: false,
-      options: {
-        temperature: 0.7,
-        top_p: 0.9,
-        top_k: 40
-      }
+      options: getOllamaOptions({ temperature: 0.7, top_p: 0.9, top_k: 40 })
     }, {
       timeout: 30000 // 30 second timeout
     });
@@ -108,7 +118,7 @@ Be friendly, helpful, and provide practical fashion advice.`;
     return {
       success: false,
       error: error.message || 'Failed to get response from Ollama',
-      fallback: 'gemini'
+      fallback: null
     };
   }
 }
@@ -124,12 +134,20 @@ async function analyzeClothingImageOllama(imageBuffer, imageMimeType) {
       return {
         success: false,
         error: 'Ollama is not running. Please start Ollama service.',
-        fallback: 'gemini'
+        fallback: null
       };
     }
 
-    // Convert image to base64
-    const imageBase64 = imageBuffer.toString('base64');
+    // Resize to limit RAM (vision models use less memory with smaller images)
+    const visionMaxDim = parseInt(process.env.OLLAMA_VISION_MAX_DIM, 10) || 512;
+    let inputBuffer = imageBuffer;
+    try {
+      inputBuffer = await sharp(imageBuffer)
+        .resize(visionMaxDim, visionMaxDim, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 82 })
+        .toBuffer();
+    } catch { /* keep original */ }
+    const imageBase64 = inputBuffer.toString('base64');
 
     const prompt = `Analyze this clothing item image in detail and extract ALL information in JSON format:
 {
@@ -156,10 +174,7 @@ Be thorough and extract as much information as possible from the image. If size/
       prompt: prompt,
       images: [imageBase64],
       stream: false,
-      options: {
-        temperature: 0.3, // Lower temperature for more consistent analysis
-        top_p: 0.9
-      }
+      options: getOllamaOptions({ temperature: 0.3, top_p: 0.9 })
     }, {
       timeout: 60000 // 60 second timeout for image analysis
     });
@@ -196,7 +211,7 @@ Be thorough and extract as much information as possible from the image. If size/
     return {
       success: false,
       error: error.message || 'Failed to analyze image with Ollama',
-      fallback: 'gemini'
+      fallback: null
     };
   }
 }
@@ -211,7 +226,7 @@ async function getOutfitRecommendationsOllama(wardrobeItems, occasion, bodyShape
       return {
         success: false,
         error: 'Ollama is not running',
-        fallback: 'gemini'
+        fallback: null
       };
     }
 
@@ -251,10 +266,7 @@ async function getOutfitRecommendationsOllama(wardrobeItems, occasion, bodyShape
       model: CHAT_MODEL,
       prompt: prompt,
       stream: false,
-      options: {
-        temperature: 0.7,
-        top_p: 0.9
-      }
+      options: getOllamaOptions({ temperature: 0.7, top_p: 0.9 })
     }, {
       timeout: 60000
     });
@@ -289,8 +301,132 @@ async function getOutfitRecommendationsOllama(wardrobeItems, occasion, bodyShape
     return {
       success: false,
       error: error.message || 'Failed to generate recommendations',
-      fallback: 'gemini'
+      fallback: null
     };
+  }
+}
+
+/**
+ * Rate/style score a clothing item (Ollama)
+ */
+async function rateClothingItemOllama(itemDescription, itemImage = null, bodyShape = null) {
+  try {
+    const ollamaStatus = await checkOllama();
+    if (!ollamaStatus.available) {
+      return { success: false, error: 'Ollama is not running.' };
+    }
+    const model = itemImage ? VISION_MODEL : CHAT_MODEL;
+    let prompt = `Rate this clothing item on a scale of 1-10 for: 1. Versatility, 2. Trendiness, 3. Quality.`;
+    if (bodyShape) prompt += ` 4. Body shape compatibility for ${bodyShape}.`;
+    prompt += ` Item: ${itemDescription}. Return scores and brief explanations in JSON format.`;
+    const body = { model, prompt, stream: false, options: getOllamaOptions({ temperature: 0.3 }) };
+    if (itemImage) body.images = [itemImage.toString('base64')];
+    const response = await axios.post(`${OLLAMA_BASE}/api/generate`, body, { timeout: 60000 });
+    const text = response.data.response;
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      const rating = JSON.parse(jsonMatch ? jsonMatch[0] : text);
+      return { success: true, rating, rawResponse: text };
+    } catch {
+      return { success: true, rating: null, rawResponse: text };
+    }
+  } catch (error) {
+    return { success: false, error: error.message || 'Failed to rate item' };
+  }
+}
+
+/**
+ * Virtual try-on: composite garment onto person using local image generation
+ * Uses LLaVA to describe person+garment, then Ollama image model (flux2-klein/z-image-turbo) to generate
+ * Note: Ollama image gen is experimental; macOS first, Windows/Linux coming soon.
+ * Requires Ollama with x/flux2-klein for image gen.
+ */
+const IMAGE_MODEL = process.env.OLLAMA_IMAGE_MODEL || 'x/flux2-klein';
+
+async function virtualTryOnOllama(userPhotoDataUrl, garmentImageBuffer, garmentMimeType) {
+  try {
+    const ollamaStatus = await checkOllama();
+    if (!ollamaStatus.available) {
+      return { success: false, error: 'Ollama is not running.' };
+    }
+
+    // Parse user photo
+    function parseDataUrl(dataUrl) {
+      if (!dataUrl || typeof dataUrl !== 'string') return null;
+      const match = dataUrl.match(/^data:(image\/[a-z]+);base64,(.+)$/);
+      if (!match) return null;
+      return { mimeType: match[1], data: match[2] };
+    }
+    const userParsed = parseDataUrl(userPhotoDataUrl);
+    const userBase64Raw = userParsed ? userParsed.data : (typeof userPhotoDataUrl === 'string' && userPhotoDataUrl.includes('base64,') ? userPhotoDataUrl.split('base64,')[1] : null);
+    if (!userBase64Raw) {
+      return { success: false, error: 'Invalid user photo format.' };
+    }
+    const tryOnMaxDim = parseInt(process.env.TRY_ON_IMAGE_MAX_DIM, 10) || 512;
+    const resizeForTryOn = async (buf) => {
+      try {
+        return await sharp(buf).resize(tryOnMaxDim, tryOnMaxDim, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+      } catch { return buf; }
+    };
+    const [userResized, garmentResized] = await Promise.all([
+      resizeForTryOn(Buffer.from(userBase64Raw, 'base64')),
+      resizeForTryOn(garmentImageBuffer)
+    ]);
+    const userBase64 = userResized.toString('base64');
+    const garmentBase64 = garmentResized.toString('base64');
+
+    // Step 1: Use LLaVA to create image generation prompt from both images
+    const descPrompt = `You see two images. Image 1: A person. Image 2: A clothing item.
+Write ONE short prompt (max 80 words) for generating a photorealistic image: the person from image 1 wearing the clothing from image 2. Match pose and lighting. Output ONLY the prompt, nothing else.`;
+
+    const descResponse = await axios.post(`${OLLAMA_BASE}/api/generate`, {
+      model: VISION_MODEL,
+      prompt: descPrompt,
+      images: [userBase64, garmentBase64],
+      stream: false,
+      options: getOllamaOptions({ temperature: 0.3 })
+    }, { timeout: 180000 }); // 3 min for LLaVA description
+
+    const imagePrompt = (descResponse.data.response || '').trim();
+    if (!imagePrompt || imagePrompt.length < 10) {
+      return { success: false, error: 'Could not create try-on prompt from images.' };
+    }
+
+    // Step 2: Generate image with Ollama image model (flux2-klein or z-image-turbo)
+    const genResponse = await axios.post(`${OLLAMA_BASE}/api/generate`, {
+      model: IMAGE_MODEL,
+      prompt: imagePrompt,
+      stream: false,
+      options: getOllamaOptions({ temperature: 0.7 })
+    }, { timeout: 900000 }); // 15 min - local image gen can take a long time
+
+    const resp = genResponse.data;
+    // Ollama image models may return: response (base64), or image field, or different structure
+    let imageBase64 = null;
+    if (resp.image) imageBase64 = resp.image;
+    else if (resp.response && typeof resp.response === 'string') {
+      const trimmed = resp.response.trim();
+      if (trimmed.length > 100 && /^[A-Za-z0-9+/=]+$/.test(trimmed.replace(/\s/g, ''))) {
+        imageBase64 = trimmed;
+      }
+    }
+    if (imageBase64) {
+      const mime = resp.mime_type || 'image/png';
+      return { success: true, image: `data:${mime};base64,${imageBase64}` };
+    }
+
+    return { success: false, error: 'Ollama image model did not return an image. Run: ollama pull x/flux2-klein' };
+  } catch (error) {
+    const data = error.response?.data;
+    const msg = (typeof data?.error === 'string' ? data.error : null) || data?.error?.message || error.message;
+    const str = String(msg);
+    const isModelMissing = /model.*not found|not found|unknown model|file does not exist/i.test(str);
+    const isWindowsNoImageGen = /image generation not available|build with mlx|mlx tag/i.test(str);
+    console.error('Ollama try-on error:', msg);
+    let userError = msg;
+    if (isModelMissing) userError = 'Ollama image model not installed. Run: ollama pull x/flux2-klein';
+    else if (isWindowsNoImageGen) userError = 'Ollama image generation is not available on Windows yet (macOS only). Use Gemini for try-on when you have quota.';
+    return { success: false, error: userError, fallback: null };
   }
 }
 
@@ -298,5 +434,7 @@ module.exports = {
   checkOllama,
   chatWithOllama,
   analyzeClothingImageOllama,
-  getOutfitRecommendationsOllama
+  getOutfitRecommendationsOllama,
+  rateClothingItemOllama,
+  virtualTryOnOllama
 };

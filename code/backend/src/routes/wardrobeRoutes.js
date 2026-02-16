@@ -228,8 +228,7 @@ router.post('/', upload.array('images', 10), async (req, res) => {
     const errorLogFile = path.join(logDir, `wardrobe-errors-${new Date().toISOString().split('T')[0]}.txt`);
     const errorLog = [];
 
-    const useOllamaForWardrobe = (process.env.WARDROBE_AI_PROVIDER || 'ollama') === 'ollama';
-    const DELAY_MS = useOllamaForWardrobe ? 1000 : 4000; // 1s for Ollama, 4s for Gemini (rate limit)
+    const DELAY_MS = 1000; // Delay between images when processing with Ollama
 
     for (let fileIndex = 0; fileIndex < req.files.length; fileIndex++) {
       if (fileIndex > 0) {
