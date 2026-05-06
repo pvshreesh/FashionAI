@@ -2,34 +2,33 @@
 
 ## Good News!
 
-Since `file:///C:/project/code/prototype/index.html` is working fine, you can use it directly! 
+Since the backend now serves the app shell at `http://localhost:3000/app`, use that instead of the retired prototype files.
 
-The CORS fix I made should allow the browser to connect to the backend even when opening the file directly.
+The backend serves the frontend directly, so no separate file-based workflow is needed.
 
 ## How to Use
 
 1. **Make sure backend is running:**
    ```bash
-   cd c:\project\code\backend
+   cd c:\project\Fashion AI\code\backend
    npm start
    ```
 
-2. **Open the file directly:**
-   - Navigate to: `C:\project\code\prototype\index.html`
-   - Double-click to open in your browser
-   - OR right-click → "Open with" → Your browser
+2. **Open the app shell:**
+   - Navigate to: `http://localhost:3000/app`
+   - Or open [code/app/index.html](../code/app/index.html)
 
 3. **Check the status:**
-   - Should show "✅ Connected to API Server"
-   - If it shows "❌ Server not connected", make sure backend is running on port 3000
+   - Should show the production dashboard and backend status
+   - If it shows "Server not connected", make sure backend is running on port 3000
 
 ## Why This Works Now
 
-I updated the CORS configuration in the backend to allow requests from any origin, including `file://` protocol. This means you can open the HTML file directly without needing a web server!
+The backend now serves the frontend shell and the client defaults to the current origin, so the app works without the old prototype workflow.
 
 ## Testing
 
-1. Open `file:///C:/project/code/prototype/index.html`
+1. Open `http://localhost:3000/app`
 2. Check status shows "✅ Connected"
 3. Try uploading an image
 4. Try chatting with AI

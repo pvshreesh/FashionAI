@@ -31,7 +31,7 @@ const upload = multer({
  * Chat with AI fashion assistant
  * Optional: authenticate for personalized responses with wardrobe context
  */
-router.post('/chat', async (req, res) => {
+router.post('/chat', authenticate, async (req, res) => {
   try {
     const { message, wardrobeContext, conversationHistory, profileImage } = req.body;
 
@@ -77,13 +77,17 @@ router.post('/chat', async (req, res) => {
       }
     }
 
-    const result = await chatWithAI(message, contextToUse, conversationHistory || [], profileImage || null);
+    const resolvedProfileImage = profileImage || req.user?.profileImage || null;
+    const result = await chatWithAI(message, contextToUse, conversationHistory || [], resolvedProfileImage);
 
     if (result.success) {
       res.json({
         success: true,
         message: result.message,
-        usage: result.usage
+        usage: result.usage,
+        ...(process.env.NODE_ENV !== 'production' && (req.body?.debug === 'true' || req.query?.debug === 'true')
+          ? { rawResponse: result.rawResponse }
+          : {})
       });
     } else {
       res.status(500).json({
@@ -105,7 +109,7 @@ router.post('/chat', async (req, res) => {
  * Virtual try-on: place garment on user's photo
  * Requires: garment image (field "image"), user photo (field "userPhoto" or "userPhotoBase64")
  */
-router.post('/try-on', upload.fields([
+router.post('/try-on', authenticate, upload.fields([
   { name: 'image', maxCount: 1 },
   { name: 'userPhoto', maxCount: 1 }
 ]), async (req, res) => {
@@ -127,6 +131,12 @@ router.post('/try-on', upload.fields([
     } else if (req.body?.userPhotoBase64) {
       const b64 = req.body.userPhotoBase64;
       userPhoto = b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`;
+    }
+
+    if (!userPhoto) {
+      if (req.user?.profileImage) {
+        userPhoto = req.user.profileImage;
+      }
     }
 
     if (!userPhoto) {
@@ -167,7 +177,7 @@ router.post('/try-on', upload.fields([
  * POST /api/ai/analyze-image
  * Analyze clothing image and extract tags
  */
-router.post('/analyze-image', upload.single('image'), async (req, res) => {
+router.post('/analyze-image', authenticate, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -185,7 +195,9 @@ router.post('/analyze-image', upload.single('image'), async (req, res) => {
       res.json({
         success: true,
         tags: result.tags,
-        rawResponse: result.rawResponse
+        ...(process.env.NODE_ENV !== 'production' && (req.body?.debug === 'true' || req.query?.debug === 'true')
+          ? { rawResponse: result.rawResponse }
+          : {})
       });
     } else {
       res.status(500).json({
@@ -207,7 +219,7 @@ router.post('/analyze-image', upload.single('image'), async (req, res) => {
  * Get outfit recommendations from wardrobe
  * Can use wardrobe items from request OR fetch from database (if authenticated)
  */
-router.post('/recommendations', async (req, res) => {
+router.post('/recommendations', authenticate, async (req, res) => {
   try {
     const { wardrobeItems, occasion, bodyShape, weather, useDatabase } = req.body;
 
@@ -266,7 +278,9 @@ router.post('/recommendations', async (req, res) => {
       res.json({
         success: true,
         outfits: result.outfits,
-        rawResponse: result.rawResponse
+        ...(process.env.NODE_ENV !== 'production' && (req.body?.debug === 'true' || req.query?.debug === 'true')
+          ? { rawResponse: result.rawResponse }
+          : {})
       });
     } else {
       res.status(500).json({
@@ -287,7 +301,7 @@ router.post('/recommendations', async (req, res) => {
  * POST /api/ai/rate-item
  * Rate/style score a clothing item
  */
-router.post('/rate-item', upload.single('image'), async (req, res) => {
+router.post('/rate-item', authenticate, upload.single('image'), async (req, res) => {
   try {
     const { itemDescription, bodyShape } = req.body;
     const itemImage = req.file ? req.file.buffer : null;

@@ -57,7 +57,7 @@ You should see:
 
 ## Step 4: Test the App
 
-1. Open `code/prototype/index.html` in your browser
+1. Open `http://localhost:3000/app` in your browser
 2. Try uploading an image in the Wardrobe tab
 3. Try chatting in the Chat tab
 

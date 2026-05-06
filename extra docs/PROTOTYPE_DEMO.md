@@ -1,4 +1,4 @@
-# 🎨 Prototype Demo Guide
+# 🎨 App Shell Guide
 
 ## 🚀 Quick Start
 
@@ -17,18 +17,9 @@ You should see:
 🔑 Gemini API: Configured ✓
 ```
 
-### Step 2: Open the Prototype
+### Step 2: Open the App Shell
 
-**Option A: Direct File**
-- Navigate to `code/prototype/`
-- Double-click `index.html` to open in your browser
-
-**Option B: Local Server** (Recommended)
-```bash
-cd code/prototype
-python -m http.server 8000
-```
-Then visit: `http://localhost:8000`
+Open `http://localhost:3000/app` in your browser.
 
 ## 🎯 What You Can Test
 
@@ -47,7 +38,7 @@ Then visit: `http://localhost:8000`
 - Select an occasion (date, work, party, etc.)
 - Optionally select body shape
 - Get AI-powered outfit recommendations
-- Uses sample wardrobe for demo
+- Uses the authenticated wardrobe data from the backend
 
 ### 4. 🔍 Analyze Image Tab
 - Upload a clothing image

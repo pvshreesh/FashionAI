@@ -10,7 +10,7 @@ const geminiTryOn = require('./geminiTryOn');
  * Chat with AI
  */
 async function chatWithAI(message, wardrobeContext = null, conversationHistory = [], profileImage = null) {
-  return await geminiService.chatWithGemini(message, wardrobeContext, conversationHistory);
+  return await geminiService.chatWithGemini(message, wardrobeContext, conversationHistory, profileImage);
 }
 
 /**

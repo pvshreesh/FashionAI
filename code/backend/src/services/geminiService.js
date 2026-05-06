@@ -56,7 +56,7 @@ async function resizeImage(buffer, maxDim = VISION_MAX_DIM) {
 /**
  * Chat with Gemini
  */
-async function chatWithGemini(message, wardrobeContext = null, conversationHistory = []) {
+async function chatWithGemini(message, wardrobeContext = null, conversationHistory = [], profileImage = null) {
   try {
     let systemPrompt = `You are a professional fashion stylist AI assistant. You help users with:
 - Fashion advice and styling tips
@@ -69,6 +69,10 @@ Be friendly, helpful, and provide practical fashion advice.`;
 
     if (wardrobeContext && wardrobeContext.length > 0) {
       systemPrompt += `\n\nUser's wardrobe items: ${JSON.stringify(wardrobeContext)}`;
+    }
+
+    if (profileImage) {
+      systemPrompt += `\n\nA saved profile photo exists for the user. Use it as context for try-on and fit guidance, but do not request the photo again unless needed.`;
     }
 
     const parts = [{ text: systemPrompt }];

@@ -1,6 +1,14 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET is not configured');
+  }
+  return secret;
+};
+
 // Verify JWT token
 const authenticate = async (req, res, next) => {
   try {
@@ -13,7 +21,7 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production');
+    const decoded = jwt.verify(token, getJwtSecret());
     const user = await User.findById(decoded.userId).select('-password');
     
     if (!user) {
@@ -37,12 +45,13 @@ const authenticate = async (req, res, next) => {
 const generateToken = (userId) => {
   return jwt.sign(
     { userId },
-    process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+    getJwtSecret(),
     { expiresIn: '30d' }
   );
 };
 
 module.exports = {
   authenticate,
-  generateToken
+  generateToken,
+  getJwtSecret
 };

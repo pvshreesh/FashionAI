@@ -43,7 +43,7 @@ Then restart the backend server.
    ```
 
 3. **Test image analysis:**
-   - Use the prototype at `code/prototype/index.html`
+   - Use the app shell at `http://localhost:3000/app`
    - Upload an image in the Wardrobe tab
    - It will use Ollama's vision model!
 

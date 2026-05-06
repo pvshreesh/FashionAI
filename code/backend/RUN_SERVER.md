@@ -3,7 +3,7 @@
 ## Quick start
 
 ```powershell
-cd c:\project\code\backend
+cd c:\project\Fashion AI\code\backend
 npm start
 ```
 
@@ -20,4 +20,4 @@ No need to run Ollama when using Gemini (`AI_PROVIDER=gemini`).
 ## Test
 
 - Health: http://localhost:3000/health
-- Prototype: open `code/prototype/index.html` in your browser
+- App shell: open `http://localhost:3000/app` in your browser

@@ -2,6 +2,8 @@
 
 A backend Node.js/Express API for Fashion AI that enables AI-powered fashion styling, virtual try-on, and wardrobe management using Google's Gemini AI.
 
+For the production-style frontend shell, see [code/app/index.html](code/app/index.html). When the backend is running, the shell is served at `/app`.
+
 ## Features
 
 - **AI Fashion Chat** — Get styling advice and fashion tips via natural language
@@ -12,6 +14,7 @@ A backend Node.js/Express API for Fashion AI that enables AI-powered fashion sty
 - **Personal Wardrobe Management** — Add, organize, search, and manage your digital closet
 - **MongoDB Integration** — Persistent storage for wardrobe items (optional)
 - **REST API** — Complete RESTful API with JSON responses
+- **Frontend shell** — A cleaner production-style UI in `code/app`
 
 ## Setup
 
@@ -479,7 +482,7 @@ Fashion AI/
 │   │   │   └── index.js
 │   │   ├── package.json
 │   │   └── .env.example
-│   └── prototype/              # Web prototype UI
+│   └── app/                    # Production-style frontend shell
 ├── docs/
 └── README.md
 ```
@@ -508,9 +511,9 @@ Fashion AI/
 4. Add wardrobe item: `curl -X POST http://localhost:3000/api/wardrobe -F "images=@shirt.jpg"`
 5. Get recommendations: `curl -X POST http://localhost:3000/api/ai/recommendations -H "Content-Type: application/json" -d '{"wardrobeItems":[{"name":"Shirt","tags":["casual"]}],"occasion":"date night"}'`
 
-### Try the Prototype
+### Try the App Shell
 
-Open `code/prototype/index.html` in a browser and connect to `http://localhost:3000` for a visual UI.
+Open `http://localhost:3000/app` in a browser for the production UI.
 
 ---
 

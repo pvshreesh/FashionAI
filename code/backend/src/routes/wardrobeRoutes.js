@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const WardrobeItem = require('../models/WardrobeItem');
 const User = require('../models/User');
 const { analyzeClothingImage } = require('../services/aiService');
+const { authenticate } = require('../middleware/auth');
 
 // Configure multer for image uploads
 const upload = multer({
@@ -25,8 +26,15 @@ const upload = multer({
  * DELETE /api/wardrobe/clear
  * Clear all wardrobe items (for testing/development)
  */
-router.delete('/clear', async (req, res) => {
+router.delete('/clear', authenticate, async (req, res) => {
   try {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({
+        success: false,
+        error: 'This endpoint is disabled in production.'
+      });
+    }
+
     // Check if database is connected
     if (mongoose.connection.readyState !== 1) {
       return res.json({
@@ -57,7 +65,7 @@ router.delete('/clear', async (req, res) => {
  * GET /api/wardrobe/stats
  * Get wardrobe statistics
  */
-router.get('/stats', async (req, res) => {
+router.get('/stats', authenticate, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.json({
@@ -66,8 +74,9 @@ router.get('/stats', async (req, res) => {
         note: 'Database not connected. Connect MongoDB to persist and count items.'
       });
     }
-    const totalItems = await WardrobeItem.countDocuments({});
+    const totalItems = await WardrobeItem.countDocuments({ userId: req.user._id });
     const totalImages = await WardrobeItem.aggregate([
+      { $match: { userId: req.user._id } },
       { $project: { imageCount: { $size: { $ifNull: ['$images', []] } } } },
       { $group: { _id: null, total: { $sum: '$imageCount' } } }
     ]);
@@ -93,7 +102,7 @@ router.get('/stats', async (req, res) => {
  * Get user's wardrobe items
  * For MVP: Authentication optional
  */
-router.get('/', async (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.json({
@@ -106,19 +115,7 @@ router.get('/', async (req, res) => {
     const { page = 1, limit = 20, filter, search } = req.query;
     const skip = (page - 1) * limit;
 
-    // For MVP: Allow unauthenticated requests (return empty or demo data)
-    let query = {};
-    try {
-      const token = req.header('Authorization')?.replace('Bearer ', '');
-      if (token) {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production-2026');
-        query.userId = decoded.userId;
-      }
-    } catch (e) {
-      // No auth - return empty for MVP
-      query.userId = new mongoose.Types.ObjectId('000000000000000000000000');
-    }
+    const query = { userId: req.user._id };
 
     // Apply filters
     if (filter) {
@@ -173,24 +170,10 @@ router.get('/', async (req, res) => {
  * Add new wardrobe item(s)
  * If multiple images: Creates ONE item per image (each image is a separate item)
  */
-router.post('/', upload.array('images', 10), async (req, res) => {
+router.post('/', authenticate, upload.array('images', 10), async (req, res) => {
   try {
-    // For MVP: Authentication optional - allow unauthenticated requests
-    let userId = null;
-    let user = null;
-    
-    // Try to authenticate if token provided (optional for MVP)
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (token) {
-      try {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production-2026');
-        userId = decoded.userId;
-        user = await User.findById(userId);
-      } catch (e) {
-        // Invalid token - continue without auth
-      }
-    }
+    const userId = req.user._id;
+    const user = await User.findById(userId);
     
     // Check wardrobe limit for free tier (if authenticated)
     if (user && user.subscription.tier === 'free') {
@@ -311,11 +294,8 @@ router.post('/', upload.array('images', 10), async (req, res) => {
           if (aiTags.season) allTags.push(aiTags.season);
         }
 
-        // Create temporary user ID if not authenticated (for MVP demo)
-        const tempUserId = userId || new mongoose.Types.ObjectId('000000000000000000000000');
-        
         const wardrobeItem = new WardrobeItem({
-          userId: tempUserId,
+          userId,
           name: aiTags.name || aiTags.description || 'Clothing Item',
           images,
           tags: [...new Set(allTags)],
@@ -426,7 +406,7 @@ router.post('/', upload.array('images', 10), async (req, res) => {
  * GET /api/wardrobe/:id
  * Get single wardrobe item
  */
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticate, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({
@@ -434,17 +414,7 @@ router.get('/:id', async (req, res) => {
         error: 'Database not connected. Connect MongoDB to load items.'
       });
     }
-    let query = { _id: req.params.id };
-    try {
-      const token = req.header('Authorization')?.replace('Bearer ', '');
-      if (token) {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production-2026');
-        query.userId = decoded.userId;
-      }
-    } catch (e) {
-      // No auth
-    }
+    let query = { _id: req.params.id, userId: req.user._id };
     
     const item = await WardrobeItem.findOne(query);
 
@@ -472,7 +442,7 @@ router.get('/:id', async (req, res) => {
  * PUT /api/wardrobe/:id
  * Update wardrobe item
  */
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticate, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({
@@ -480,17 +450,7 @@ router.put('/:id', async (req, res) => {
         error: 'Database not connected. Connect MongoDB to update items.'
       });
     }
-    let query = { _id: req.params.id };
-    try {
-      const token = req.header('Authorization')?.replace('Bearer ', '');
-      if (token) {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production-2026');
-        query.userId = decoded.userId;
-      }
-    } catch (e) {
-      // No auth
-    }
+    let query = { _id: req.params.id, userId: req.user._id };
     
     const item = await WardrobeItem.findOneAndUpdate(
       query,
@@ -522,7 +482,7 @@ router.put('/:id', async (req, res) => {
  * DELETE /api/wardrobe/:id
  * Delete wardrobe item
  */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticate, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({
@@ -530,17 +490,7 @@ router.delete('/:id', async (req, res) => {
         error: 'Database not connected. Connect MongoDB to delete items.'
       });
     }
-    let query = { _id: req.params.id };
-    try {
-      const token = req.header('Authorization')?.replace('Bearer ', '');
-      if (token) {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production-2026');
-        query.userId = decoded.userId;
-      }
-    } catch (e) {
-      // No auth
-    }
+    let query = { _id: req.params.id, userId: req.user._id };
     
     const item = await WardrobeItem.findOneAndDelete(query);
 

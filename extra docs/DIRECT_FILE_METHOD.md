@@ -2,35 +2,35 @@
 
 ## Yes, Forget About localhost:8000 and Live Server!
 
-Since opening the file directly (`file:///C:/project/code/prototype/index.html`) works fine, **you don't need any web server**!
+Since the backend now serves the production shell at `http://localhost:3000/app`, **you don't need the old prototype files or a separate web server**.
 
 ## How to Use
 
 1. **Start Backend:**
    ```bash
-   cd c:\project\code\backend
+   cd c:\project\Fashion AI\code\backend
    npm start
    ```
 
-2. **Open File Directly:**
-   - Navigate to: `C:\project\code\prototype\index.html`
-   - Double-click to open in your browser
-   - That's it! No server needed!
+2. **Open the App Shell:**
+   - Navigate to: `http://localhost:3000/app`
+   - Or use [code/app/index.html](../code/app/index.html)
+   - That's it!
 
 ## Why This Works
 
-- ✅ CORS is configured to allow `file://` protocol
-- ✅ Backend accepts requests from any origin
+- ✅ CORS is configured for the app shell origin
+- ✅ Backend serves the frontend directly
 - ✅ No need for http-server or Live Server
 - ✅ Simpler workflow
 
 ## What You Need Running
 
 - ✅ **Backend:** `npm start` in `code/backend` (port 3000)
-- ✅ **Ollama:** Should be running automatically
+- ✅ **App shell:** `http://localhost:3000/app`
 - ❌ **http-server:** NOT needed
 - ❌ **Live Server:** NOT needed
-- ❌ **localhost:8000:** NOT needed
+- ❌ **prototype folder:** not used anymore
 
 ## Fixed: Clear Wardrobe Error
 

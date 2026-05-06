@@ -3,6 +3,7 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
 require('dotenv').config();
 
 const connectDB = require('./config/database');
@@ -13,6 +14,13 @@ const wardrobeRoutes = require('./routes/wardrobeRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const appDirectory = path.join(__dirname, '../../app');
+
+const localOriginPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+const configuredOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || process.env.CLIENT_URL || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 // Security middleware (relax for dev: allow cross-origin fetch from prototype)
 app.use(helmet({
@@ -31,13 +39,44 @@ app.use('/api/', (req, res, next) => {
 });
 
 // Middleware
-app.use(cors({
-  origin: '*', // Allow all origins for development
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+app.use((req, res, next) => {
+  const requestOrigin = req.headers.origin;
+  if (!requestOrigin) {
+    next();
+    return;
+  }
+
+  const forwardedProto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  const requestHostOrigin = `${forwardedProto}://${req.get('host')}`;
+  const allowedOrigins = new Set(configuredOrigins);
+
+  if (process.env.APP_ORIGIN) {
+    allowedOrigins.add(process.env.APP_ORIGIN);
+  }
+
+  const isAllowed =
+    allowedOrigins.has(requestOrigin) ||
+    requestOrigin === requestHostOrigin ||
+    (process.env.NODE_ENV !== 'production' && localOriginPattern.test(requestOrigin));
+
+  if (!isAllowed) {
+    next(new Error(`CORS blocked for origin: ${requestOrigin}`));
+    return;
+  }
+
+  cors({
+    origin: requestOrigin,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  })(req, res, next);
+});
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
+
+app.use('/app', express.static(appDirectory));
+app.get('/app/*', (req, res) => {
+  res.sendFile(path.join(appDirectory, 'index.html'));
+});
 
 // Connect to database (optional for MVP; set DATABASE_URL in .env to persist wardrobe)
 connectDB();
@@ -88,6 +127,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Fashion App API server running on port ${PORT}`);
   console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🤖 AI: Gemini (all features)`);
+  console.log(`🖥️ Frontend: http://localhost:${PORT}/app`);
   if (process.env.GEMINI_API_KEY) console.log(`🔑 Gemini API key configured`);
   console.log(`\n📋 Available endpoints:`);
   console.log(`\n🔐 Authentication:`);

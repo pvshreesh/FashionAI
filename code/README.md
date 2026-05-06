@@ -13,6 +13,11 @@ code/
 │   │   └── config/       # Configuration
 │   ├── package.json
 │   └── .env
+├── app/             # Production-style frontend shell
+│   ├── index.html
+│   ├── app.js
+│   ├── api.js
+│   └── styles.css
 ├── mobile/          # Mobile app (React Native or Flutter)
 │   └── (to be added)
 └── .env             # Environment variables (DO NOT COMMIT)
@@ -41,6 +46,14 @@ code/
    ```bash
    npm run dev
    ```
+
+### Frontend Shell
+
+Open `app/index.html` through a local static server and point it at the backend with `fashion-api-base` in `localStorage` if needed.
+
+When the backend is running, the same shell is served directly at `http://localhost:3000/app`.
+
+The production UI lives in `app/` and is also served from `http://localhost:3000/app` by the backend.
 
 ## API Key Security
 
