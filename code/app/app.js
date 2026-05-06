@@ -1,6 +1,7 @@
 import { FashionApi } from './api.js';
 
 const api = new FashionApi();
+const TEST_MODE = true;
 
 const state = {
   activeView: 'overview',
@@ -23,13 +24,13 @@ const state = {
 };
 
 const views = [
-  { id: 'overview', label: 'Overview', hint: 'Status and shortcuts' },
-  { id: 'wardrobe', label: 'Wardrobe', hint: 'Inventory and uploads' },
-  { id: 'chat', label: 'Stylist Chat', hint: 'Ask the AI' },
-  { id: 'analysis', label: 'Analyze', hint: 'Tag an image' },
-  { id: 'recommendations', label: 'Looks', hint: 'Build outfits' },
-  { id: 'tryon', label: 'Try-On', hint: 'Visual preview' },
-  { id: 'profile', label: 'Profile', hint: 'Account and photo' }
+  { id: 'overview', label: 'Overview', hint: 'Get started', primary: true },
+  { id: 'wardrobe', label: 'Wardrobe', hint: 'Upload clothes', primary: true },
+  { id: 'chat', label: 'Stylist Chat', hint: 'Talk to AI', primary: true },
+  { id: 'tryon', label: 'Try-On', hint: 'Virtual fitting', primary: true },
+  { id: 'recommendations', label: 'Outfit Ideas', hint: 'Get suggestions', primary: false },
+  { id: 'analysis', label: 'Analyze Clothes', hint: 'Tag photos', primary: false },
+  { id: 'profile', label: 'Profile', hint: 'Settings', primary: false }
 ];
 
 const root = document.getElementById('app');
@@ -52,58 +53,24 @@ function chipList(items, tone = '') {
 }
 
 function heroMarkup() {
-  const profile = state.auth.profile;
   const wardrobeCount = state.wardrobe.length;
-  const subscription = profile?.subscription?.tier || 'guest';
 
   return `
     <section class="hero fade-in">
       <div>
-        <div class="chip-row" style="margin-bottom:16px">
-          <span class="chip accent">Production shell</span>
-          <span class="chip">${esc(state.appStatus)}</span>
-          <span class="chip ${state.appError ? 'danger' : 'warn'}">${state.appError ? esc(state.appError) : esc(subscription)}</span>
-        </div>
-        <h2>Fashion AI, rebuilt as a real product.</h2>
-        <p>
-          A focused wardrobe workspace with authenticated profile state, direct AI tools, and a cleaner interface that can survive real users.
-        </p>
+        <h2>Start styling your wardrobe with AI.</h2>
+        <p>Upload photos of your clothes, get outfit recommendations, and try on items virtually.</p>
         <div class="hero-actions">
-          <button class="button-primary" data-action="view:wardrobe">Open wardrobe</button>
-          <button class="button-secondary" data-action="view:chat">Ask the stylist</button>
-          <button class="button-ghost" data-action="view:profile">Profile settings</button>
+          <button class="button-primary" data-action="view:wardrobe">Upload clothes</button>
+          <button class="button-secondary" data-action="view:chat">Chat with stylist</button>
+          <button class="button-secondary" data-action="view:tryon">Virtual try-on</button>
         </div>
       </div>
       <div class="hero-aside">
-        <div class="metric-grid">
-          <div class="metric-card">
-            <strong>${formatCount(wardrobeCount)}</strong>
-            <span>Saved wardrobe items</span>
-          </div>
-          <div class="metric-card">
-            <strong>${formatCount(state.recommendations.length)}</strong>
-            <span>Generated looks</span>
-          </div>
-          <div class="metric-card">
-            <strong>${profile?.username ? esc(profile.username) : 'Guest'}</strong>
-            <span>Active profile</span>
-          </div>
-          <div class="metric-card">
-            <strong>${state.auth.token ? 'Signed in' : 'Not signed in'}</strong>
-            <span>Session state</span>
-          </div>
-        </div>
         <div class="surface" style="padding:18px">
-          <div class="section-head" style="margin-bottom:10px">
-            <div>
-              <h3 class="panel-title" style="font-size:1.35rem;margin-bottom:4px">System health</h3>
-              <p class="section-subtitle">Live backend checks and product readiness.</p>
-            </div>
-          </div>
           <div class="stack">
-            <div class="status-pill"><span class="status-indicator"></span><span>${esc(state.appStatus)}</span></div>
-            <div class="notice">API base: ${esc(api.baseUrl)}</div>
-            <div class="notice ${state.auth.token ? 'success' : ''}">${state.auth.token ? 'Authenticated session available.' : 'Connect an account to unlock wardrobe, profile, and try-on.'}</div>
+            <div style="color:var(--muted);font-size:0.88rem">Wardrobe items: <strong style="color:var(--text)">${formatCount(wardrobeCount)}</strong></div>
+            <div style="color:var(--muted);font-size:0.88rem">Status: <strong style="color:var(--accent)">${esc(state.appStatus)}</strong></div>
           </div>
         </div>
       </div>
@@ -162,8 +129,7 @@ function authMarkup() {
 }
 
 function overviewMarkup() {
-  const topItems = state.wardrobe.slice(0, 3);
-  const latestMessages = state.chatMessages.slice(-3);
+  const topItems = state.wardrobe.slice(0, 2);
 
   return `
     <div class="panel-grid fade-in">
@@ -171,44 +137,21 @@ function overviewMarkup() {
         <section class="section-card">
           <div class="section-head">
             <div>
-              <h3 class="section-title">Current wardrobe</h3>
-              <p class="section-subtitle">Items synced from the API.</p>
+              <h3 class="section-title">Your wardrobe</h3>
             </div>
-            <button class="button-ghost" data-action="view:wardrobe">See all</button>
           </div>
           <div class="cards">
-            ${topItems.length ? topItems.map(itemCardMarkup).join('') : emptyState('No wardrobe items yet', 'Upload clothing photos to start building the closet.')}
-          </div>
-        </section>
-        <section class="section-card">
-          <div class="section-head">
-            <div>
-              <h3 class="section-title">Recent styling chat</h3>
-              <p class="section-subtitle">Latest conversation state.</p>
-            </div>
-            <button class="button-ghost" data-action="view:chat">Open chat</button>
-          </div>
-          <div class="cards">
-            ${latestMessages.map(messageMarkup).join('')}
+            ${topItems.length ? topItems.map(itemCardMarkup).join('') : emptyState('No clothes uploaded yet', 'Start by uploading photos of your clothing items.')}
           </div>
         </section>
       </div>
       <div class="stack">
         <section class="section-card">
-          <h3 class="section-title">Quick actions</h3>
-          <p class="section-subtitle">Shortcuts to the most common flows.</p>
-          <div class="stack" style="margin-top:16px">
-            <button class="button-secondary" data-action="view:recommendations">Generate outfit ideas</button>
-            <button class="button-secondary" data-action="view:analysis">Analyze a garment photo</button>
-            <button class="button-secondary" data-action="view:tryon">Run virtual try-on</button>
-          </div>
-        </section>
-        <section class="section-card">
-          <h3 class="section-title">Profile</h3>
-          <div class="stack" style="margin-top:14px">
-            <div class="notice">${state.auth.profile ? esc(state.auth.profile.email) : 'No authenticated profile loaded yet.'}</div>
-            <div class="notice">Subscription: ${esc(state.auth.profile?.subscription?.tier || 'guest')}</div>
-            <div class="notice">Photo: ${state.auth.profile?.profileImage ? 'available' : 'not set'}</div>
+          <h3 class="section-title">What you can do</h3>
+          <div class="stack" style="margin-top:12px;gap:10px">
+            <button class="button-secondary" style="width:100%;justify-content:center" data-action="view:wardrobe">📸 Upload wardrobe</button>
+            <button class="button-secondary" style="width:100%;justify-content:center" data-action="view:chat">💬 Chat with AI</button>
+            <button class="button-secondary" style="width:100%;justify-content:center" data-action="view:tryon">👗 Try on clothes</button>
           </div>
         </section>
       </div>
@@ -502,7 +445,7 @@ function shellMarkup() {
           <p>Product shell for wardrobe intelligence, styling help, and photo-driven try-on.</p>
         </div>
         <nav class="nav">
-          ${views.map((view) => `
+          ${views.filter(v => v.primary).map((view) => `
             <button class="${state.activeView === view.id ? 'active' : ''}" data-action="view:${view.id}">
               <span>
                 <strong style="display:block;text-align:left">${esc(view.label)}</strong>
@@ -512,6 +455,18 @@ function shellMarkup() {
             </button>
           `).join('')}
         </nav>
+        <details style="margin-top:12px;padding:0 16px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:0.88rem;padding:8px 0">More tools</summary>
+          <nav class="nav" style="margin-top:8px;padding:0">
+            ${views.filter(v => !v.primary).map((view) => `
+              <button class="${state.activeView === view.id ? 'active' : ''}" data-action="view:${view.id}" style="font-size:0.9rem">
+                <span>
+                  <strong style="display:block;text-align:left">${esc(view.label)}</strong>
+                </span>
+              </button>
+            `).join('')}
+          </nav>
+        </details>
         <div class="sidebar-footer">
           <span class="status-pill"><span class="status-indicator"></span>${esc(state.auth.token ? 'Session active' : 'Signed out')}</span>
           <span>${esc(state.auth.profile?.email || 'No user loaded')}</span>
@@ -520,34 +475,14 @@ function shellMarkup() {
       </aside>
       <main class="main-panel">
         ${heroMarkup()}
-        <div class="panel-grid">
-          <div>
-            ${state.activeView === 'overview' ? overviewMarkup() : ''}
-            ${state.activeView === 'wardrobe' ? wardrobeMarkup() : ''}
-            ${state.activeView === 'chat' ? chatMarkup() : ''}
-            ${state.activeView === 'analysis' ? analysisMarkup() : ''}
-            ${state.activeView === 'recommendations' ? recommendationsMarkup() : ''}
-            ${state.activeView === 'tryon' ? tryOnMarkup() : ''}
-            ${state.activeView === 'profile' ? profileMarkup() : ''}
-          </div>
-          <div class="stack">
-            <section class="section-card">
-              <h3 class="section-title">Connection</h3>
-              <div class="stack" style="margin-top:14px">
-                <div class="notice ${state.appError ? 'error' : 'success'}">${esc(state.appError || 'Backend healthy and ready.')}</div>
-                <div class="notice">Wardrobe endpoint is the source of truth for saved items.</div>
-                <div class="notice">Chat and try-on are using the same auth session and base URL.</div>
-              </div>
-            </section>
-            <section class="section-card">
-              <h3 class="section-title">Session</h3>
-              <div class="stack" style="margin-top:14px">
-                <div class="notice">Mode: ${esc(state.authMode)}</div>
-                <div class="notice">Token: ${state.auth.token ? 'present' : 'missing'}</div>
-                <div class="notice">View: ${esc(state.activeView)}</div>
-              </div>
-            </section>
-          </div>
+        <div style="padding: 18px;">
+          ${state.activeView === 'overview' ? overviewMarkup() : ''}
+          ${state.activeView === 'wardrobe' ? wardrobeMarkup() : ''}
+          ${state.activeView === 'chat' ? chatMarkup() : ''}
+          ${state.activeView === 'analysis' ? analysisMarkup() : ''}
+          ${state.activeView === 'recommendations' ? recommendationsMarkup() : ''}
+          ${state.activeView === 'tryon' ? tryOnMarkup() : ''}
+          ${state.activeView === 'profile' ? profileMarkup() : ''}
         </div>
       </main>
     </div>
@@ -555,8 +490,7 @@ function shellMarkup() {
 }
 
 function render() {
-  const signedIn = Boolean(state.auth.token && state.auth.profile);
-  root.innerHTML = signedIn ? shellMarkup() : authMarkup();
+  root.innerHTML = shellMarkup();
 }
 
 function setNotice(message, type = 'info') {
@@ -571,28 +505,28 @@ function setLoading(loading, message = null) {
 }
 
 async function loadSession() {
-  if (!state.auth.token) {
-    render();
-    return;
-  }
-
   try {
-    const [profileResult, wardrobeResult, statsResult, healthResult] = await Promise.allSettled([
-      api.profile(),
-      api.wardrobe({ limit: 20 }),
-      api.wardrobeStats(),
-      api.health()
-    ]);
+    const requests = [api.health()];
 
-    if (profileResult.status === 'fulfilled') {
+    if (state.auth.token) {
+      requests.push(api.profile(), api.wardrobe({ limit: 20 }), api.wardrobeStats());
+    }
+
+    const results = await Promise.allSettled(requests);
+    const healthResult = results[0];
+    const profileResult = results[1];
+    const wardrobeResult = results[2];
+    const statsResult = results[3];
+
+    if (profileResult?.status === 'fulfilled') {
       state.auth.profile = profileResult.value.profile;
     }
 
-    if (wardrobeResult.status === 'fulfilled') {
+    if (wardrobeResult?.status === 'fulfilled') {
       state.wardrobe = wardrobeResult.value.items || [];
     }
 
-    if (statsResult.status === 'fulfilled') {
+    if (statsResult?.status === 'fulfilled') {
       state.wardrobeStats = statsResult.value;
     }
 
@@ -765,15 +699,10 @@ function bindInteractions() {
 async function bootstrap() {
   bindInteractions();
   await loadSession();
-  if (!state.auth.token) {
-    try {
-      const health = await api.health();
-      setNotice(`Backend healthy: ${health.status}`, 'info');
-    } catch (error) {
-      setNotice(error.message, 'error');
-    }
-    render();
+  if (!state.auth.token && TEST_MODE) {
+    setNotice('Login hidden for local testing. Connect an account later to enable auth-only features.', 'info');
   }
+  render();
 }
 
 bootstrap();
