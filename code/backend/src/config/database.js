@@ -3,12 +3,17 @@ require('dotenv').config();
 
 const connectDB = async () => {
   try {
-    // For MVP, use MongoDB Atlas (cloud) or local MongoDB
-    // If no DATABASE_URL, use local MongoDB
-    const mongoURI = process.env.DATABASE_URL || 'mongodb://localhost:27017/fashion-app';
+    const isProduction = process.env.NODE_ENV === 'production';
+    const mongoURI = process.env.DATABASE_URL || (!isProduction ? 'mongodb://localhost:27017/fashion-app' : null);
+
+    if (!mongoURI) {
+      console.log('⚠️  DATABASE_URL is not set. Skipping MongoDB connection in production.');
+      return null;
+    }
     
     const conn = await mongoose.connect(mongoURI, {
-      // Remove deprecated options for newer mongoose versions
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000
     });
 
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);

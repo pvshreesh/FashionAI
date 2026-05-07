@@ -1,7 +1,6 @@
 import { FashionApi } from './api.js';
 
 const api = new FashionApi();
-const TEST_MODE = true;
 
 const state = {
   activeView: 'overview',
@@ -699,9 +698,6 @@ function bindInteractions() {
 async function bootstrap() {
   bindInteractions();
   await loadSession();
-  if (!state.auth.token && TEST_MODE) {
-    setNotice('Login hidden for local testing. Connect an account later to enable auth-only features.', 'info');
-  }
   render();
 }
 

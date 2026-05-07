@@ -6,7 +6,9 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 require('dotenv').config();
 
+const mongoose = require('mongoose');
 const connectDB = require('./config/database');
+const { validateStartupEnvironment } = require('./config/environment');
 const aiRoutes = require('./routes/aiRoutes');
 const authRoutes = require('./routes/authRoutes');
 const profileRoutes = require('./routes/profileRoutes');
@@ -60,7 +62,9 @@ app.use((req, res, next) => {
     (process.env.NODE_ENV !== 'production' && localOriginPattern.test(requestOrigin));
 
   if (!isAllowed) {
-    next(new Error(`CORS blocked for origin: ${requestOrigin}`));
+    const error = new Error(`CORS blocked for origin: ${requestOrigin}`);
+    error.statusCode = 403;
+    next(error);
     return;
   }
 
@@ -79,7 +83,78 @@ app.get('/app/*', (req, res) => {
 });
 
 // Connect to database (optional for MVP; set DATABASE_URL in .env to persist wardrobe)
-connectDB();
+let server;
+
+async function startServer() {
+  const startupConfig = validateStartupEnvironment();
+
+  if (startupConfig.isProduction && !startupConfig.hasExplicitCorsOrigin) {
+    console.log('⚠️  No explicit frontend origin configured. Same-origin requests will still work, but set CORS_ORIGINS or FRONTEND_URL for cross-origin deployments.');
+  }
+
+  connectDB();
+
+  server = app.listen(PORT, () => {
+    console.log(`🚀 Fashion App API server running on port ${PORT}`);
+    console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🤖 AI: Gemini (all features)`);
+    console.log(`🖥️ Frontend: http://localhost:${PORT}/app`);
+    if (process.env.GEMINI_API_KEY) console.log(`🔑 Gemini API key configured`);
+    console.log(`\n📋 Available endpoints:`);
+    console.log(`\n🔐 Authentication:`);
+    console.log(`  POST /api/auth/register`);
+    console.log(`  POST /api/auth/login`);
+    console.log(`  GET  /api/auth/me`);
+    console.log(`\n👤 Profile:`);
+    console.log(`  GET    /api/profile`);
+    console.log(`  POST   /api/profile/photo`);
+    console.log(`  DELETE /api/profile/photo`);
+    console.log(`\n🤖 AI Services:`);
+    console.log(`  POST /api/ai/chat`);
+    console.log(`  POST /api/ai/try-on (virtual try-on: garment image + profile photo)`);
+    console.log(`  POST /api/ai/analyze-image`);
+    console.log(`  POST /api/ai/recommendations`);
+    console.log(`  POST /api/ai/rate-item`);
+    console.log(`\n👔 Wardrobe:`);
+    console.log(`  GET    /api/wardrobe`);
+    console.log(`  POST   /api/wardrobe`);
+    console.log(`  GET    /api/wardrobe/:id`);
+    console.log(`  PUT    /api/wardrobe/:id`);
+    console.log(`  DELETE /api/wardrobe/:id`);
+  });
+
+  const shutdown = async (signal) => {
+    console.log(`\n${signal} received. Shutting down gracefully...`);
+    if (server) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.connection.close(false);
+    }
+    process.exit(0);
+  };
+
+  process.once('SIGTERM', () => {
+    shutdown('SIGTERM').catch((error) => {
+      console.error('Graceful shutdown failed:', error);
+      process.exit(1);
+    });
+  });
+
+  process.once('SIGINT', () => {
+    shutdown('SIGINT').catch((error) => {
+      console.error('Graceful shutdown failed:', error);
+      process.exit(1);
+    });
+  });
+}
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error('Failed to start server:', error.message || error);
+    process.exit(1);
+  });
+}
 
 // Health check
 app.get('/health', (req, res) => {
@@ -116,40 +191,11 @@ app.get('/', (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err);
-  res.status(500).json({
+  const statusCode = err.statusCode || err.status || (String(err.message || '').startsWith('CORS blocked for origin:') ? 403 : 500);
+  res.status(statusCode).json({
     success: false,
     error: err.message || 'Internal server error'
   });
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Fashion App API server running on port ${PORT}`);
-  console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🤖 AI: Gemini (all features)`);
-  console.log(`🖥️ Frontend: http://localhost:${PORT}/app`);
-  if (process.env.GEMINI_API_KEY) console.log(`🔑 Gemini API key configured`);
-  console.log(`\n📋 Available endpoints:`);
-  console.log(`\n🔐 Authentication:`);
-  console.log(`  POST /api/auth/register`);
-  console.log(`  POST /api/auth/login`);
-  console.log(`  GET  /api/auth/me`);
-  console.log(`\n👤 Profile:`);
-  console.log(`  GET    /api/profile`);
-  console.log(`  POST   /api/profile/photo`);
-  console.log(`  DELETE /api/profile/photo`);
-  console.log(`\n🤖 AI Services:`);
-  console.log(`  POST /api/ai/chat`);
-  console.log(`  POST /api/ai/try-on (virtual try-on: garment image + profile photo)`);
-  console.log(`  POST /api/ai/analyze-image`);
-  console.log(`  POST /api/ai/recommendations`);
-  console.log(`  POST /api/ai/rate-item`);
-  console.log(`\n👔 Wardrobe:`);
-  console.log(`  GET    /api/wardrobe`);
-  console.log(`  POST   /api/wardrobe`);
-  console.log(`  GET    /api/wardrobe/:id`);
-  console.log(`  PUT    /api/wardrobe/:id`);
-  console.log(`  DELETE /api/wardrobe/:id`);
 });
 
 module.exports = app;
