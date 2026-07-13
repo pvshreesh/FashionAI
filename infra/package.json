@@ -1,0 +1,23 @@
+{
+  "name": "fashion-ai-infra",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth",
+    "deploy:dev": "cdk deploy FashionAi-dev",
+    "deploy:staging": "cdk deploy FashionAi-staging",
+    "deploy:prod": "cdk deploy FashionAi-prod"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "aws-cdk": "^2.1029.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.220.0",
+    "constructs": "^10.4.2",
+    "source-map-support": "^0.5.21"
+  }
+}

@@ -30,8 +30,6 @@ async function resizeForApi(buffer) {
 /** Optionally shrink output image for faster display/transfer */
 async function resizeOutputToMax(buffer, maxDim = MAX_IMAGE_DIM) {
   try {
-    const meta = await sharp(buffer).metadata();
-    if ((meta.width || 0) <= maxDim && (meta.height || 0) <= maxDim) return buffer;
     return await sharp(buffer)
       .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 85 })
@@ -39,13 +37,6 @@ async function resizeOutputToMax(buffer, maxDim = MAX_IMAGE_DIM) {
   } catch {
     return buffer;
   }
-}
-
-/** Parse "retry in Xs" from 429 error message; return delay in ms or null */
-function getRetryAfterMs(error) {
-  const msg = error?.response?.data?.error?.message || error?.message || '';
-  const m = msg.match(/retry in ([\d.]+)s/i);
-  return m ? Math.ceil(parseFloat(m[1])) * 1000 : 60000; // default 60s
 }
 
 /**
@@ -78,8 +69,9 @@ async function tryModel(apiKey, model, userBase64, garmentBase64) {
 
   const parts = candidates[0].content?.parts || [];
   for (const part of parts) {
-    if (part.inline_data && part.inline_data.data) {
-      let outBuffer = Buffer.from(part.inline_data.data, 'base64');
+    const inlineData = part.inlineData || part.inline_data;
+    if (inlineData?.data) {
+      let outBuffer = Buffer.from(inlineData.data, 'base64');
       outBuffer = await resizeOutputToMax(outBuffer);
       const b64 = outBuffer.toString('base64');
       return { success: true, image: `data:image/jpeg;base64,${b64}` };
@@ -90,7 +82,7 @@ async function tryModel(apiKey, model, userBase64, garmentBase64) {
 }
 
 /**
- * Virtual try-on: try gemini-2.5-flash-image, then gemini-2.0-flash-exp-image-generation. If both fail, return both errors.
+ * Virtual try-on with Gemini's stable image model.
  * @returns {{ success: boolean, image?: string, error?: string }}
  */
 async function virtualTryOnGemini(userPhotoDataUrl, garmentImageBuffer, garmentMimeType) {
@@ -114,26 +106,8 @@ async function virtualTryOnGemini(userPhotoDataUrl, garmentImageBuffer, garmentM
     const userBase64 = userResized.toString('base64');
     const garmentBase64 = garmentResized.toString('base64');
 
-    const models = ['gemini-2.5-flash-image', 'gemini-2.0-flash-exp-image-generation'];
-    const errors = [];
-
-    for (const model of models) {
-      console.log('[Gemini try-on] trying model:', model);
-      try {
-        const result = await tryModel(apiKey, model, userBase64, garmentBase64);
-        if (result.success) return result;
-        errors.push({ model, error: result.error || 'No image returned' });
-        console.log('[Gemini try-on]', model, 'failed:', result.error);
-      } catch (err) {
-        const msg = err.response?.data?.error?.message || err.message;
-        errors.push({ model, error: msg });
-        console.log('[Gemini try-on]', model, 'error:', msg);
-      }
-    }
-
-    const combined = errors.map((e) => `${e.model}: ${e.error}`).join(' | ');
-    console.error('[Gemini try-on] both models failed.', combined);
-    return { success: false, error: `Both models failed. ${combined}` };
+    const model = process.env.GEMINI_TRY_ON_MODEL || 'gemini-2.5-flash-image';
+    return await tryModel(apiKey, model, userBase64, garmentBase64);
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
     console.error('Gemini try-on error:', msg);

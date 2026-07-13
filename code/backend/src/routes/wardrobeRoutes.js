@@ -1,20 +1,90 @@
 const express = require('express');
 const multer = require('multer');
 const router = express.Router();
-const mongoose = require('mongoose');
-const WardrobeItem = require('../models/WardrobeItem');
-const User = require('../models/User');
 const { analyzeClothingImage } = require('../services/aiService');
-const { authenticate } = require('../middleware/auth');
+const { authenticateWardrobeRequest } = require('../middleware/auth');
+const { decodeImageDataUrl, deleteImage, hydrateStoredImages, isSupportedImageType, storeImage } = require('../utils/imageStorage');
+const { getWardrobeOwnerId, isSharedWardrobeEnabled } = require('../config/wardrobeMode');
+const {
+  countWardrobeItems,
+  createWardrobeItem,
+  deleteAllWardrobeItems,
+  deleteWardrobeItem,
+  getWardrobeItem,
+  getWardrobeStats,
+  listWardrobeItems,
+  updateWardrobeItem
+} = require('../repositories/wardrobeRepository');
+const { getUserById } = require('../repositories/usersRepository');
 
-// Configure multer for image uploads
+function cleanText(value, maxLength = 500) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) || undefined : undefined;
+}
+
+function cleanList(value, maxItems = 20) {
+  return Array.isArray(value)
+    ? [...new Set(value.map((item) => cleanText(item, 100)).filter(Boolean))].slice(0, maxItems)
+    : [];
+}
+
+function buildWardrobeTags(aiTags = {}) {
+  const allTags = [];
+
+  if (Array.isArray(aiTags.tags) && aiTags.tags.length > 0) {
+    allTags.push(...aiTags.tags);
+  } else {
+    if (aiTags.itemType) allTags.push(aiTags.itemType);
+    if (aiTags.color) allTags.push(aiTags.color);
+    if (aiTags.pattern && aiTags.pattern !== 'solid') allTags.push(aiTags.pattern);
+    if (aiTags.style) allTags.push(aiTags.style);
+    if (aiTags.occasion) {
+      const occasions = Array.isArray(aiTags.occasion) ? aiTags.occasion : [aiTags.occasion];
+      allTags.push(...occasions);
+    }
+    if (aiTags.season) allTags.push(aiTags.season);
+  }
+
+  return cleanList(allTags);
+}
+
+function createWardrobeItemPayload(userId, aiTags, images) {
+  return {
+    userId,
+    name: cleanText(aiTags.name, 200) || cleanText(aiTags.description, 200) || 'Clothing Item',
+    images,
+    tags: buildWardrobeTags(aiTags),
+    itemType: cleanText(aiTags.itemType, 100),
+    color: cleanText(aiTags.color, 100),
+    pattern: cleanText(aiTags.pattern, 100),
+    style: cleanText(aiTags.style, 100),
+    occasion: cleanList(Array.isArray(aiTags.occasion) ? aiTags.occasion : [aiTags.occasion]),
+    season: cleanText(aiTags.season, 100),
+    fit: cleanText(aiTags.fit, 100),
+    size: aiTags.size !== 'unknown' ? cleanText(aiTags.size, 50) : undefined,
+    brand: aiTags.brand !== 'unknown' ? cleanText(aiTags.brand, 100) : undefined,
+    bodyShapeCompatibility: cleanList(aiTags.bodyShapeCompatibility, 10),
+    aiDescription: cleanText(aiTags.description || aiTags.aiDescription, 2000),
+    wearCount: 0,
+    isFavorite: false
+  };
+}
+
+async function hydrateWardrobeItem(item) {
+  if (!item) return item;
+
+  return {
+    ...item,
+    images: await hydrateStoredImages(item.images || [])
+  };
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB
+    fileSize: 10 * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    if (isSupportedImageType(file.mimetype)) {
       cb(null, true);
     } else {
       cb(new Error('Only image files allowed'), false);
@@ -22,11 +92,7 @@ const upload = multer({
   }
 });
 
-/**
- * DELETE /api/wardrobe/clear
- * Clear all wardrobe items (for testing/development)
- */
-router.delete('/clear', authenticate, async (req, res) => {
+router.delete('/clear', authenticateWardrobeRequest, async (req, res) => {
   try {
     if (process.env.NODE_ENV === 'production') {
       return res.status(403).json({
@@ -35,58 +101,29 @@ router.delete('/clear', authenticate, async (req, res) => {
       });
     }
 
-    // Check if database is connected
-    if (mongoose.connection.readyState !== 1) {
-      return res.json({
-        success: true,
-        message: 'Database not connected. No items to clear.',
-        deletedCount: 0,
-        note: 'Items are stored in memory only when database is not connected'
-      });
-    }
-
-    const result = await WardrobeItem.deleteMany({});
+    const ownerId = getWardrobeOwnerId(req);
+    const deletedItems = await deleteAllWardrobeItems(ownerId);
+    await Promise.allSettled(deletedItems.flatMap((item) => (item.images || []).map(deleteImage)));
     res.json({
       success: true,
-      message: `Cleared ${result.deletedCount} item(s) from wardrobe`,
-      deletedCount: result.deletedCount
+      message: `Cleared ${deletedItems.length} item(s) from wardrobe`,
+      deletedCount: deletedItems.length
     });
   } catch (error) {
     console.error('Clear wardrobe error:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to clear wardrobe',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message || 'Failed to clear wardrobe'
     });
   }
 });
 
-/**
- * GET /api/wardrobe/stats
- * Get wardrobe statistics
- */
-router.get('/stats', authenticate, async (req, res) => {
+router.get('/stats', authenticateWardrobeRequest, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.json({
-        success: true,
-        stats: { totalItems: 0, totalImages: 0 },
-        note: 'Database not connected. Connect MongoDB to persist and count items.'
-      });
-    }
-    const totalItems = await WardrobeItem.countDocuments({ userId: req.user._id });
-    const totalImages = await WardrobeItem.aggregate([
-      { $match: { userId: req.user._id } },
-      { $project: { imageCount: { $size: { $ifNull: ['$images', []] } } } },
-      { $group: { _id: null, total: { $sum: '$imageCount' } } }
-    ]);
-
+    const stats = await getWardrobeStats(getWardrobeOwnerId(req));
     res.json({
       success: true,
-      stats: {
-        totalItems,
-        totalImages: totalImages[0]?.total || 0
-      }
+      stats
     });
   } catch (error) {
     console.error('Get stats error:', error);
@@ -97,62 +134,30 @@ router.get('/stats', authenticate, async (req, res) => {
   }
 });
 
-/**
- * GET /api/wardrobe
- * Get user's wardrobe items
- * For MVP: Authentication optional
- */
-router.get('/', authenticate, async (req, res) => {
+router.get('/', authenticateWardrobeRequest, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.json({
-        success: true,
-        items: [],
-        pagination: { page: 1, limit: 20, total: 0, pages: 0 },
-        note: 'Database not connected. Connect MongoDB to load saved items.'
-      });
-    }
     const { page = 1, limit = 20, filter, search } = req.query;
-    const skip = (page - 1) * limit;
+    const result = await listWardrobeItems({
+      userId: getWardrobeOwnerId(req),
+      page,
+      limit,
+      filter,
+      search
+    });
 
-    const query = { userId: req.user._id };
-
-    // Apply filters
-    if (filter) {
-      try {
-        const filters = typeof filter === 'string' ? JSON.parse(filter) : filter;
-        if (filters.tags) query.tags = { $in: filters.tags };
-        if (filters.itemType) query.itemType = filters.itemType;
-        if (filters.color) query.color = filters.color;
-        if (filters.season) query.season = filters.season;
-      } catch (e) {
-        // Invalid filter - continue without
-      }
+    const hydratedItems = [];
+    for (const item of result.items) {
+      hydratedItems.push(await hydrateWardrobeItem(item));
     }
-
-    // Search
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { tags: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    const items = await WardrobeItem.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await WardrobeItem.countDocuments(query);
 
     res.json({
       success: true,
-      items,
+      items: hydratedItems,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
+        page: result.page,
+        limit: result.limit,
+        total: result.total,
+        pages: result.pages
       }
     });
   } catch (error) {
@@ -165,28 +170,67 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
-/**
- * POST /api/wardrobe
- * Add new wardrobe item(s)
- * If multiple images: Creates ONE item per image (each image is a separate item)
- */
-router.post('/', authenticate, upload.array('images', 10), async (req, res) => {
+router.post('/save-analyzed', authenticateWardrobeRequest, async (req, res) => {
   try {
-    const userId = req.user._id;
-    const user = await User.findById(userId);
-    
-    // Check wardrobe limit for free tier (if authenticated)
-    if (user && user.subscription.tier === 'free') {
-      const itemCount = await WardrobeItem.countDocuments({ userId: user._id });
-      if (itemCount >= user.subscription.wardrobeItemLimit) {
+    const { analysis, imageDataUrl } = req.body || {};
+    const ownerId = getWardrobeOwnerId(req);
+
+    if (!analysis || Array.isArray(analysis) || typeof analysis !== 'object') {
+      return res.status(400).json({
+        success: false,
+        error: 'Analysis data is required'
+      });
+    }
+
+    if (!imageDataUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'A base64 imageDataUrl is required'
+      });
+    }
+
+    if (!isSharedWardrobeEnabled()) {
+      const user = await getUserById(ownerId);
+      if (user?.subscription?.tier === 'free' && await countWardrobeItems(ownerId) >= user.subscription.wardrobeItemLimit) {
         return res.status(403).json({
           success: false,
-          error: `Wardrobe limit reached (${user.subscription.wardrobeItemLimit} items). Upgrade to premium for unlimited items.`
+          error: `Wardrobe limit reached (${user.subscription.wardrobeItemLimit} items).`
         });
       }
     }
 
-    // Require at least one image for AI analysis
+    const { buffer, contentType } = decodeImageDataUrl(imageDataUrl);
+    const storedImage = await storeImage(buffer, contentType, `analysis.${contentType.split('/')[1]}`);
+    let item;
+    try {
+      item = await createWardrobeItem(
+        ownerId,
+        createWardrobeItemPayload(ownerId, analysis, [{ ...storedImage, isPrimary: true }])
+      );
+    } catch (error) {
+      await deleteImage(storedImage).catch(() => {});
+      throw error;
+    }
+
+    res.status(201).json({
+      success: true,
+      item: await hydrateWardrobeItem(item),
+      message: 'Analyzed item saved to wardrobe'
+    });
+  } catch (error) {
+    console.error('Save analyzed wardrobe item error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to save analyzed item'
+    });
+  }
+});
+
+router.post('/', authenticateWardrobeRequest, upload.array('images', 10), async (req, res) => {
+  try {
+    const userId = getWardrobeOwnerId(req);
+    const user = isSharedWardrobeEnabled() ? null : await getUserById(userId);
+
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({
         success: false,
@@ -194,29 +238,20 @@ router.post('/', authenticate, upload.array('images', 10), async (req, res) => {
       });
     }
 
-    console.log(`\n📸 Processing ${req.files.length} image(s)...`);
+    if (user && user.subscription?.tier === 'free') {
+      const itemCount = await countWardrobeItems(userId);
+      if (itemCount + req.files.length > user.subscription.wardrobeItemLimit) {
+        return res.status(403).json({
+          success: false,
+          error: `This upload would exceed the ${user.subscription.wardrobeItemLimit}-item wardrobe limit.`
+        });
+      }
+    }
 
-    // If multiple images, create separate items for each (each image is a different item)
     const savedItems = [];
     const errors = [];
-    const fs = require('fs');
-    const path = require('path');
-    const logDir = path.join(__dirname, '../../logs');
-    
-    // Ensure logs directory exists
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true });
-    }
-    
-    const errorLogFile = path.join(logDir, `wardrobe-errors-${new Date().toISOString().split('T')[0]}.txt`);
-    const errorLog = [];
 
-    const DELAY_MS = 1000; // Delay between images when processing with Ollama
-
-    for (let fileIndex = 0; fileIndex < req.files.length; fileIndex++) {
-      if (fileIndex > 0) {
-        await new Promise(r => setTimeout(r, DELAY_MS));
-      }
+    for (let fileIndex = 0; fileIndex < req.files.length; fileIndex += 1) {
       const imageFile = req.files[fileIndex];
       const imageInfo = {
         index: fileIndex + 1,
@@ -225,145 +260,46 @@ router.post('/', authenticate, upload.array('images', 10), async (req, res) => {
         mimetype: imageFile.mimetype,
         timestamp: new Date().toISOString()
       };
-      
-      console.log(`\n  Processing image ${imageInfo.index}/${req.files.length}: ${imageInfo.filename}`);
 
+      let stored = null;
       try {
-        // Analyze each image with AI
         const analysis = await analyzeClothingImage(imageFile.buffer, imageFile.mimetype, { forWardrobe: true });
-        
-        if (!analysis.success) {
-          const errorDetails = {
-            ...imageInfo,
-            error: analysis.error,
-            errorType: 'AI Analysis Failed',
-            rawResponse: analysis.rawResponse || null
-          };
-          console.error(`  ❌ AI analysis failed for image ${imageInfo.index}:`, analysis.error);
-          errors.push({ 
-            image: imageInfo.index, 
+
+        if (!analysis.success || !analysis.tags) {
+          const message = analysis.error || 'AI did not return usable data';
+          errors.push({
+            image: imageInfo.index,
             filename: imageInfo.filename,
-            error: analysis.error 
+            error: message
           });
-          errorLog.push(JSON.stringify(errorDetails, null, 2));
-          continue;
-        }
-        
-        const aiTags = analysis.tags;
-        
-        if (!aiTags) {
-          const errorDetails = {
-            ...imageInfo,
-            error: 'AI did not return usable data',
-            errorType: 'No Tags Extracted',
-            rawResponse: analysis.rawResponse || null
-          };
-          console.error(`  ❌ No tags extracted for image ${imageInfo.index}`);
-          errors.push({ 
-            image: imageInfo.index, 
-            filename: imageInfo.filename,
-            error: 'AI did not return usable data' 
-          });
-          errorLog.push(JSON.stringify(errorDetails, null, 2));
           continue;
         }
 
-        // Store this single image
-        const { storeImage } = require('../utils/imageStorage');
-        const stored = await storeImage(imageFile.buffer, imageFile.mimetype, imageFile.originalname);
-        
-        const images = [{
-          url: stored.url,
-          isPrimary: true
-        }];
-
-        // Build tags array from AI analysis
-        const allTags = [];
-        if (aiTags.tags && Array.isArray(aiTags.tags)) {
-          allTags.push(...aiTags.tags);
-        } else {
-          // Fallback: build tags from individual fields
-          if (aiTags.itemType) allTags.push(aiTags.itemType);
-          if (aiTags.color) allTags.push(aiTags.color);
-          if (aiTags.pattern && aiTags.pattern !== 'solid') allTags.push(aiTags.pattern);
-          if (aiTags.style) allTags.push(aiTags.style);
-          if (aiTags.occasion) {
-            const occasions = Array.isArray(aiTags.occasion) ? aiTags.occasion : [aiTags.occasion];
-            allTags.push(...occasions);
-          }
-          if (aiTags.season) allTags.push(aiTags.season);
-        }
-
-        const wardrobeItem = new WardrobeItem({
+        stored = await storeImage(imageFile.buffer, imageFile.mimetype, imageFile.originalname);
+        const item = await createWardrobeItem(
           userId,
-          name: aiTags.name || aiTags.description || 'Clothing Item',
-          images,
-          tags: [...new Set(allTags)],
-          itemType: aiTags.itemType,
-          color: aiTags.color,
-          pattern: aiTags.pattern,
-          style: aiTags.style,
-          occasion: Array.isArray(aiTags.occasion) ? aiTags.occasion : [aiTags.occasion],
-          season: aiTags.season,
-          fit: aiTags.fit,
-          size: aiTags.size && aiTags.size !== 'unknown' ? aiTags.size : undefined,
-          brand: aiTags.brand && aiTags.brand !== 'unknown' ? aiTags.brand : undefined,
-          bodyShapeCompatibility: aiTags.bodyShapeCompatibility || [],
-          aiDescription: aiTags.description
-        });
+          createWardrobeItemPayload(userId, analysis.tags, [{
+            ...stored,
+            isPrimary: true
+          }])
+        );
 
-        // Try to save
-        let savedItem = null;
-        try {
-          savedItem = await wardrobeItem.save();
-          console.log(`  ✅ Saved: ${savedItem.name} (ID: ${savedItem._id})`);
-          savedItems.push(savedItem);
-        } catch (dbError) {
-          console.log(`  ⚠️  Database not connected: ${dbError.message}`);
-          savedItem = wardrobeItem;
-          savedItems.push(savedItem);
-        }
+        savedItems.push(await hydrateWardrobeItem(item));
       } catch (error) {
-        const errorDetails = {
-          ...imageInfo,
-          error: error.message,
-          errorType: 'Processing Error',
-          stack: error.stack
-        };
-        console.error(`  ❌ Error processing image ${imageInfo.index}:`, error.message);
-        errors.push({ 
-          image: imageInfo.index, 
+        if (stored) await deleteImage(stored).catch(() => {});
+        errors.push({
+          image: imageInfo.index,
           filename: imageInfo.filename,
-          error: error.message 
+          error: error.message
         });
-        errorLog.push(JSON.stringify(errorDetails, null, 2));
       }
     }
-    
-    // Write error log to file if there are errors
-    if (errorLog.length > 0) {
-      const logContent = `=== Wardrobe Upload Errors - ${new Date().toISOString()} ===\n\n` +
-                       `Total Files: ${req.files.length}\n` +
-                       `Successful: ${savedItems.length}\n` +
-                       `Failed: ${errors.length}\n\n` +
-                       `=== Error Details ===\n\n` +
-                       errorLog.join('\n\n---\n\n') + '\n';
-      
-      try {
-        fs.appendFileSync(errorLogFile, logContent);
-        console.log(`\n📝 Error log saved to: ${errorLogFile}`);
-      } catch (logError) {
-        console.error('Failed to write error log:', logError.message);
-      }
-    }
-
-    console.log(`\n📊 Summary: ${savedItems.length} item(s) saved, ${errors.length} error(s)\n`);
 
     if (savedItems.length === 0) {
       return res.status(500).json({
         success: false,
         error: 'Failed to process any images',
-        errors: errors
+        errors
       });
     }
 
@@ -373,27 +309,24 @@ router.post('/', authenticate, upload.array('images', 10), async (req, res) => {
       count: savedItems.length,
       message: `Successfully added ${savedItems.length} item(s)${errors.length > 0 ? ` (${errors.length} failed)` : ''}`
     };
-    
-    // Include detailed error information
+
     if (errors.length > 0) {
       response.errors = errors;
-      response.errorLogFile = errorLog.length > 0 ? errorLogFile : undefined;
       response.errorSummary = {
         total: req.files.length,
         successful: savedItems.length,
         failed: errors.length,
-        failedImages: errors.map(e => ({
-          image: e.image,
-          filename: e.filename || `Image ${e.image}`,
-          error: e.error
+        failedImages: errors.map((entry) => ({
+          image: entry.image,
+          filename: entry.filename || `Image ${entry.image}`,
+          error: entry.error
         }))
       };
     }
-    
+
     res.status(201).json(response);
   } catch (error) {
     console.error('Add wardrobe item error:', error);
-    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to add wardrobe item',
@@ -402,21 +335,9 @@ router.post('/', authenticate, upload.array('images', 10), async (req, res) => {
   }
 });
 
-/**
- * GET /api/wardrobe/:id
- * Get single wardrobe item
- */
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticateWardrobeRequest, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database not connected. Connect MongoDB to load items.'
-      });
-    }
-    let query = { _id: req.params.id, userId: req.user._id };
-    
-    const item = await WardrobeItem.findOne(query);
+    const item = await getWardrobeItem(getWardrobeOwnerId(req), req.params.id);
 
     if (!item) {
       return res.status(404).json({
@@ -427,7 +348,7 @@ router.get('/:id', authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      item
+      item: await hydrateWardrobeItem(item)
     });
   } catch (error) {
     console.error('Get item error:', error);
@@ -438,25 +359,21 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
-/**
- * PUT /api/wardrobe/:id
- * Update wardrobe item
- */
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', authenticateWardrobeRequest, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database not connected. Connect MongoDB to update items.'
-      });
+    const updates = {};
+    for (const field of ['name', 'itemType', 'color', 'pattern', 'style', 'season', 'fit', 'size', 'brand', 'aiDescription']) {
+      if (req.body?.[field] !== undefined) updates[field] = cleanText(req.body[field], field === 'aiDescription' ? 2000 : 200);
     }
-    let query = { _id: req.params.id, userId: req.user._id };
-    
-    const item = await WardrobeItem.findOneAndUpdate(
-      query,
-      { ...req.body, updatedAt: new Date() },
-      { new: true, runValidators: true }
-    );
+    for (const field of ['tags', 'occasion', 'bodyShapeCompatibility']) {
+      if (req.body?.[field] !== undefined) updates[field] = cleanList(req.body[field]);
+    }
+    if (typeof req.body?.isFavorite === 'boolean') updates.isFavorite = req.body.isFavorite;
+    if (Number.isInteger(req.body?.wearCount) && req.body.wearCount >= 0) updates.wearCount = req.body.wearCount;
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, error: 'No valid wardrobe fields provided.' });
+    }
+    const item = await updateWardrobeItem(getWardrobeOwnerId(req), req.params.id, updates);
 
     if (!item) {
       return res.status(404).json({
@@ -467,7 +384,7 @@ router.put('/:id', authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      item
+      item: await hydrateWardrobeItem(item)
     });
   } catch (error) {
     console.error('Update item error:', error);
@@ -478,21 +395,9 @@ router.put('/:id', authenticate, async (req, res) => {
   }
 });
 
-/**
- * DELETE /api/wardrobe/:id
- * Delete wardrobe item
- */
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticateWardrobeRequest, async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database not connected. Connect MongoDB to delete items.'
-      });
-    }
-    let query = { _id: req.params.id, userId: req.user._id };
-    
-    const item = await WardrobeItem.findOneAndDelete(query);
+    const item = await deleteWardrobeItem(getWardrobeOwnerId(req), req.params.id);
 
     if (!item) {
       return res.status(404).json({
@@ -500,6 +405,9 @@ router.delete('/:id', authenticate, async (req, res) => {
         error: 'Item not found'
       });
     }
+
+    const cleanup = await Promise.allSettled((item.images || []).map(deleteImage));
+    cleanup.filter((result) => result.status === 'rejected').forEach((result) => console.error('Deleted wardrobe image cleanup failed:', result.reason));
 
     res.json({
       success: true,

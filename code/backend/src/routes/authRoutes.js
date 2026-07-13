@@ -1,8 +1,36 @@
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
-const User = require('../models/User');
-const { generateToken, authenticate } = require('../middleware/auth');
+const { authenticate } = require('../middleware/auth');
+const {
+  confirmSignUpWithCognito,
+  getCognitoUser,
+  refreshCognitoSession,
+  signInWithCognito,
+  signUpWithCognito
+} = require('../services/cognitoAuth');
+const { upsertCognitoUserProfile } = require('../repositories/usersRepository');
+const { getImageUrl } = require('../utils/imageStorage');
+
+function authErrorStatus(error) {
+  if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
+    return error.statusCode;
+  }
+
+  const message = String(error.message || '');
+  if (/confirm|verification|code/i.test(message)) return 403;
+  if (/unauthorized|invalid|incorrect|password/i.test(message)) return 401;
+  if (/exists/i.test(message)) return 409;
+  return 500;
+}
+
+function authErrorMessage(error, fallback) {
+  const message = error.message || fallback;
+  if (/configured with secret but SECRET_HASH was not received/i.test(message)) {
+    return 'Cognito app client secret is required. Add COGNITO_APP_CLIENT_SECRET to backend/.env or use a Cognito app client without a secret.';
+  }
+  return message;
+}
 
 /**
  * POST /api/auth/register
@@ -10,7 +38,7 @@ const { generateToken, authenticate } = require('../middleware/auth');
  */
 router.post('/register', [
   body('email').isEmail().normalizeEmail(),
-  body('password').isLength({ min: 6 }),
+  body('password').isLength({ min: 8 }),
   body('username').optional().trim()
 ], async (req, res) => {
   try {
@@ -24,42 +52,72 @@ router.post('/register', [
 
     const { email, password, username } = req.body;
 
-    // Check if user exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        error: 'User with this email already exists'
+    const { user, confirmed, codeDeliveryDetails } = await signUpWithCognito({ email, password, username });
+    const profile = await upsertCognitoUserProfile(user);
+
+    if (!confirmed) {
+      return res.status(202).json({
+        success: true,
+        requiresEmailConfirmation: true,
+        message: codeDeliveryDetails?.Destination
+          ? `Cognito created the account. Confirm the verification code sent to ${codeDeliveryDetails.Destination}.`
+          : 'Cognito created the account. Confirm the verification code from your email before signing in.',
+        user: {
+          id: profile?._id || user.id,
+          email: user.email,
+          username: profile?.username || user.username,
+          subscription: profile?.subscription || { tier: 'free' }
+        }
       });
     }
 
-    // Create user
-    const user = new User({
-      email,
-      password,
-      username: username || email.split('@')[0]
-    });
-
-    await user.save();
-
-    // Generate token
-    const token = generateToken(user._id);
+    const signInResult = await signInWithCognito({ email, password });
 
     res.status(201).json({
       success: true,
-      token,
+      token: signInResult.accessToken,
+      idToken: signInResult.idToken,
+      refreshToken: signInResult.refreshToken,
       user: {
-        id: user._id,
+        id: profile?._id || user.id,
         email: user.email,
-        username: user.username,
-        subscription: user.subscription
+        username: profile?.username || user.username,
+        subscription: profile?.subscription || { tier: 'free' }
       }
     });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({
+    res.status(authErrorStatus(error)).json({
       success: false,
-      error: 'Failed to register user'
+      error: authErrorMessage(error, 'Failed to register user')
+    });
+  }
+});
+
+router.post('/confirm', [
+  body('email').isEmail().normalizeEmail(),
+  body('code').notEmpty().trim()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        errors: errors.array()
+      });
+    }
+
+    const { email, code } = req.body;
+    await confirmSignUpWithCognito({ email, code });
+    res.json({
+      success: true,
+      message: 'Account confirmed. You can sign in now.'
+    });
+  } catch (error) {
+    console.error('Confirmation error:', error);
+    res.status(authErrorStatus(error)).json({
+      success: false,
+      error: authErrorMessage(error, 'Failed to confirm account')
     });
   }
 });
@@ -83,42 +141,67 @@ router.post('/login', [
 
     const { email, password } = req.body;
 
-    // Find user
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid email or password'
-      });
-    }
-
-    // Check password
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid email or password'
-      });
-    }
-
-    // Generate token
-    const token = generateToken(user._id);
+    const session = await signInWithCognito({ email, password });
+    const user = await getCognitoUser(session.accessToken);
+    const profile = await upsertCognitoUserProfile(user);
 
     res.json({
       success: true,
-      token,
+      token: session.accessToken,
+      idToken: session.idToken,
+      refreshToken: session.refreshToken,
       user: {
-        id: user._id,
+        id: profile?._id || user.id,
         email: user.email,
-        username: user.username,
-        subscription: user.subscription
+        username: profile?.username || user.username,
+        subscription: profile?.subscription || { tier: 'free' }
       }
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({
+    res.status(authErrorStatus(error)).json({
       success: false,
-      error: 'Failed to login'
+      error: authErrorMessage(error, 'Failed to login')
+    });
+  }
+});
+
+router.post('/refresh', [
+  body('refreshToken').notEmpty()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        errors: errors.array()
+      });
+    }
+
+    const session = await refreshCognitoSession({
+      refreshToken: req.body.refreshToken,
+      email: req.body.email
+    });
+    const user = await getCognitoUser(session.accessToken);
+    const profile = await upsertCognitoUserProfile(user);
+
+    res.json({
+      success: true,
+      token: session.accessToken,
+      idToken: session.idToken,
+      refreshToken: session.refreshToken,
+      user: {
+        id: profile?._id || user.id,
+        email: user.email,
+        username: profile?.username || user.username,
+        subscription: profile?.subscription || { tier: 'free' }
+      }
+    });
+  } catch (error) {
+    console.error('Refresh error:', error);
+    res.status(authErrorStatus(error)).json({
+      success: false,
+      error: authErrorMessage(error, 'Failed to refresh session')
     });
   }
 });
@@ -129,25 +212,24 @@ router.post('/login', [
  */
 router.get('/me', authenticate, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
-    
+    const profile = req.user;
+
     res.json({
       success: true,
       user: {
-        id: user._id,
-        email: user.email,
-        username: user.username,
-        stylePreferences: user.stylePreferences,
-        subscription: user.subscription,
-        profileImage: user.profileImage || null
-        // Note: bodyMeasurements NOT included (privacy)
+        id: profile._id,
+        email: profile.email,
+        username: profile.username,
+        stylePreferences: profile?.stylePreferences,
+        subscription: profile?.subscription || { tier: 'free' },
+        profileImage: profile?.profileImage ? await getImageUrl(profile.profileImage) : null
       }
     });
   } catch (error) {
     console.error('Get profile error:', error);
-    res.status(500).json({
+    res.status(authErrorStatus(error)).json({
       success: false,
-      error: 'Failed to get profile'
+      error: authErrorMessage(error, 'Failed to get profile')
     });
   }
 });

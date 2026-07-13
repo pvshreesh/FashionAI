@@ -1,18 +1,34 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { getCognitoUser } = require('../services/cognitoAuth');
+const { upsertCognitoUserProfile } = require('../repositories/usersRepository');
+const { isSharedWardrobeEnabled } = require('../config/wardrobeMode');
 
-const getJwtSecret = () => {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error('JWT_SECRET is not configured');
+async function resolveUserFromToken(token) {
+  const cognitoUser = await getCognitoUser(token);
+  const localUser = await upsertCognitoUserProfile(cognitoUser);
+
+  if (localUser) {
+    return localUser;
   }
-  return secret;
-};
+
+  return {
+    _id: cognitoUser.id,
+    id: cognitoUser.id,
+    cognitoUserId: cognitoUser.id,
+    email: cognitoUser.email,
+    username: cognitoUser.username,
+    profileImage: null,
+    subscription: { tier: 'free' }
+  };
+}
+
+function readBearerToken(req) {
+  return req.header('Authorization')?.match(/^Bearer\s+(.+)$/i)?.[1] || null;
+}
 
 // Verify JWT token
 const authenticate = async (req, res, next) => {
   try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
+    const token = readBearerToken(req);
     
     if (!token) {
       return res.status(401).json({
@@ -21,8 +37,7 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(token, getJwtSecret());
-    const user = await User.findById(decoded.userId).select('-password');
+    const user = await resolveUserFromToken(token);
     
     if (!user) {
       return res.status(401).json({
@@ -41,17 +56,37 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-// Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign(
-    { userId },
-    getJwtSecret(),
-    { expiresIn: '30d' }
-  );
+const optionalAuthenticate = async (req, res, next) => {
+  const token = readBearerToken(req);
+
+  if (!token) {
+    next();
+    return;
+  }
+
+  try {
+    const user = await resolveUserFromToken(token);
+    if (user) {
+      req.user = user;
+    }
+  } catch (error) {
+    req.user = null;
+  }
+
+  next();
+};
+
+const authenticateWardrobeRequest = async (req, res, next) => {
+  if (isSharedWardrobeEnabled()) {
+    next();
+    return;
+  }
+
+  return authenticate(req, res, next);
 };
 
 module.exports = {
+  authenticateWardrobeRequest,
   authenticate,
-  generateToken,
-  getJwtSecret
+  optionalAuthenticate
 };

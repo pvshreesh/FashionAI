@@ -1,35 +1,51 @@
 import { FashionApi } from './api.js';
 
 const api = new FashionApi();
-
 const state = {
-  activeView: 'overview',
-  authMode: 'login',
+  activeView: 'wardrobe',
   auth: {
     token: api.getToken(),
-    profile: null
+    profile: api.getSession()?.user || null
   },
-  appStatus: 'Checking connection',
-  appError: null,
+  system: {
+    backend: 'checking',
+    database: 'unknown',
+    wardrobeMode: 'shared',
+    capabilities: {}
+  },
+  notice: {
+    type: 'info',
+    message: ''
+  },
   wardrobe: [],
-  wardrobeStats: null,
-  chatMessages: [
-    { role: 'assistant', text: 'Ask for outfit ideas, styling advice, or wardrobe combinations.' }
-  ],
+  wardrobeSearch: '',
+  wardrobeNote: '',
+  recommendationOccasion: 'smart casual dinner',
   recommendations: [],
-  tryOnImage: null,
+  chatInput: '',
+  chatMessages: [{ role: 'assistant', text: 'Tell me the occasion, weather, or item you want to style.' }],
+  analysisFile: null,
+  analysisResult: null,
+  analysisImageDataUrl: '',
+  tryOnGarmentFile: null,
+  tryOnUserPhotoFile: null,
+  imagePrompt: 'Editorial fashion campaign photo of a confident model wearing a structured royal blue blazer, soft studio lighting, clean background',
   previewImage: null,
-  loading: false
+  generatedImage: null,
+  loading: false,
+  loadingMessage: '',
+  accountMode: 'login',
+  pendingConfirmationEmail: '',
+  pendingConfirmationCode: '',
+  profilePhotoFile: null
 };
 
 const views = [
-  { id: 'overview', label: 'Overview', hint: 'Get started', primary: true },
-  { id: 'wardrobe', label: 'Wardrobe', hint: 'Upload clothes', primary: true },
-  { id: 'chat', label: 'Stylist Chat', hint: 'Talk to AI', primary: true },
-  { id: 'tryon', label: 'Try-On', hint: 'Virtual fitting', primary: true },
-  { id: 'recommendations', label: 'Outfit Ideas', hint: 'Get suggestions', primary: false },
-  { id: 'analysis', label: 'Analyze Clothes', hint: 'Tag photos', primary: false },
-  { id: 'profile', label: 'Profile', hint: 'Settings', primary: false }
+  { id: 'analysis', label: 'Analyze' },
+  { id: 'wardrobe', label: 'Wardrobe' },
+  { id: 'chat', label: 'Chat' },
+  { id: 'tryon', label: 'Try-On' },
+  { id: 'account', label: 'Account' }
 ];
 
 const root = document.getElementById('app');
@@ -43,662 +59,946 @@ function esc(value) {
     .replaceAll("'", '&#39;');
 }
 
-function formatCount(value) {
-  return new Intl.NumberFormat().format(value || 0);
+function setNotice(message, type = 'info') {
+  state.notice = { message, type };
+  render();
+}
+
+function setLoading(loading, message = '') {
+  state.loading = loading;
+  state.loadingMessage = loading ? message : '';
+  render();
+}
+
+function hasSession() {
+  return Boolean(state.auth.token && state.auth.profile);
+}
+
+function sessionStatusLabel() {
+  return hasSession()
+    ? `Signed in as ${state.auth.profile.username || state.auth.profile.email}`
+    : state.system.wardrobeMode === 'shared' ? 'Shared wardrobe mode' : 'Sign in for personal wardrobe';
+}
+
+function databaseConnected() {
+  return ['configured', 'connected', 'ready'].includes(state.system.database);
+}
+
+function canUseWardrobe() {
+  return databaseConnected() && (state.system.wardrobeMode === 'shared' || hasSession());
+}
+
+function wardrobeItems() {
+  const query = state.wardrobeSearch.trim().toLowerCase();
+  if (!query) return state.wardrobe;
+
+  return state.wardrobe.filter((item) => {
+    const haystack = [
+      item.name,
+      item.itemType,
+      item.color,
+      item.style,
+      ...(item.tags || [])
+    ].join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
 }
 
 function chipList(items, tone = '') {
-  return (items || []).slice(0, 6).map((item) => `<span class="chip ${tone}">${esc(item)}</span>`).join('');
-}
-
-function heroMarkup() {
-  const wardrobeCount = state.wardrobe.length;
-
-  return `
-    <section class="hero fade-in">
-      <div>
-        <h2>Start styling your wardrobe with AI.</h2>
-        <p>Upload photos of your clothes, get outfit recommendations, and try on items virtually.</p>
-        <div class="hero-actions">
-          <button class="button-primary" data-action="view:wardrobe">Upload clothes</button>
-          <button class="button-secondary" data-action="view:chat">Chat with stylist</button>
-          <button class="button-secondary" data-action="view:tryon">Virtual try-on</button>
-        </div>
-      </div>
-      <div class="hero-aside">
-        <div class="surface" style="padding:18px">
-          <div class="stack">
-            <div style="color:var(--muted);font-size:0.88rem">Wardrobe items: <strong style="color:var(--text)">${formatCount(wardrobeCount)}</strong></div>
-            <div style="color:var(--muted);font-size:0.88rem">Status: <strong style="color:var(--accent)">${esc(state.appStatus)}</strong></div>
-          </div>
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function authMarkup() {
-  return `
-    <section class="auth-layout fade-in">
-      <div class="auth-hero">
-        <div class="chip-row" style="margin-bottom:18px">
-          <span class="chip accent">Secure auth</span>
-          <span class="chip">Profile photo upload</span>
-          <span class="chip">Wardrobe + chat sync</span>
-        </div>
-        <h2>One product shell for styling, inventory, and try-on.</h2>
-        <p>
-          The old prototype was a demo page. This version uses a shared API client, a persistent session, and a single layout that can grow into production.
-        </p>
-        <div class="split-grid" style="margin-top:24px">
-          <div class="prompt-card" style="padding:18px">
-            <h4>What’s wired</h4>
-            <p>Auth, profile photo upload, wardrobe CRUD, chat, recommendations, analysis, and try-on.</p>
-          </div>
-          <div class="prompt-card" style="padding:18px">
-            <h4>What’s next</h4>
-            <p>Role-based access, server-side quotas, and stronger API contracts for production traffic.</p>
-          </div>
-        </div>
-      </div>
-      <div class="auth-panel">
-        <div class="auth-tabs">
-          <button class="${state.authMode === 'login' ? 'active' : ''}" data-action="auth-mode" data-mode="login">Sign in</button>
-          <button class="${state.authMode === 'register' ? 'active' : ''}" data-action="auth-mode" data-mode="register">Create account</button>
-        </div>
-        <form class="auth-grid" data-form="auth">
-          <div class="form-field">
-            <label>Email</label>
-            <input name="email" type="email" placeholder="you@example.com" required />
-          </div>
-          <div class="form-field">
-            <label>Password</label>
-            <input name="password" type="password" placeholder="Minimum 6 characters" required />
-          </div>
-          <div class="form-field">
-            <label>Username</label>
-            <input name="username" type="text" placeholder="Optional" />
-          </div>
-          <button class="button-primary" type="submit">${state.authMode === 'login' ? 'Sign in' : 'Create account'}</button>
-        </form>
-        <p class="footer-note">API base can be changed from localStorage with the key <strong>fashion-api-base</strong>.</p>
-      </div>
-    </section>
-  `;
-}
-
-function overviewMarkup() {
-  const topItems = state.wardrobe.slice(0, 2);
-
-  return `
-    <div class="panel-grid fade-in">
-      <div>
-        <section class="section-card">
-          <div class="section-head">
-            <div>
-              <h3 class="section-title">Your wardrobe</h3>
-            </div>
-          </div>
-          <div class="cards">
-            ${topItems.length ? topItems.map(itemCardMarkup).join('') : emptyState('No clothes uploaded yet', 'Start by uploading photos of your clothing items.')}
-          </div>
-        </section>
-      </div>
-      <div class="stack">
-        <section class="section-card">
-          <h3 class="section-title">What you can do</h3>
-          <div class="stack" style="margin-top:12px;gap:10px">
-            <button class="button-secondary" style="width:100%;justify-content:center" data-action="view:wardrobe">📸 Upload wardrobe</button>
-            <button class="button-secondary" style="width:100%;justify-content:center" data-action="view:chat">💬 Chat with AI</button>
-            <button class="button-secondary" style="width:100%;justify-content:center" data-action="view:tryon">👗 Try on clothes</button>
-          </div>
-        </section>
-      </div>
-    </div>
-  `;
+  return (items || [])
+    .filter(Boolean)
+    .slice(0, 6)
+    .map((item) => `<span class="chip ${tone}">${esc(item)}</span>`)
+    .join('');
 }
 
 function itemCardMarkup(item) {
-  const tags = item.tags || [];
+  const itemId = item.id || item.itemId || item._id;
+  const imageMarkup = item?.images?.[0]?.url
+    ? `<img alt="${esc(item.name || 'Wardrobe item')}" src="${esc(item.images[0].url)}">`
+    : '<div class="placeholder">No image</div>';
+  const summary = [item.color, item.style, item.itemType].filter(Boolean).join(' / ');
+
   return `
     <article class="item-card">
-      <div class="item-top">
+      <div class="item-image">${imageMarkup}</div>
+      <div class="item-info">
+        <h4>${esc(item.name || 'Wardrobe item')}</h4>
+        <p class="secondary">${esc(summary || 'Uncategorized')}</p>
+        ${item.aiDescription ? `<p class="item-copy">${esc(item.aiDescription)}</p>` : ''}
+        ${item.tags?.length ? `<div class="tags">${chipList(item.tags, 'small')}</div>` : ''}
+        ${itemId ? `<button class="button-danger" data-action="delete-item" data-id="${esc(itemId)}" ${state.loading ? 'disabled' : ''}>Delete</button>` : ''}
+      </div>
+    </article>
+  `;
+}
+
+function recommendationMarkup(outfit, index) {
+  const items = Array.isArray(outfit.items) ? outfit.items.join(', ') : outfit.items || 'Suggested outfit';
+  const reason = outfit.reasoning || outfit.whyItWorks || outfit.reason || '';
+  const tips = outfit.stylingTips || outfit.tips || outfit.bodyShapeFlattery || '';
+
+  return `
+    <article class="result-card">
+      <div class="result-title">Look ${index + 1}</div>
+      <h3>${esc(items)}</h3>
+      ${reason ? `<p>${esc(reason)}</p>` : ''}
+      ${tips ? `<p class="secondary">${esc(tips)}</p>` : ''}
+    </article>
+  `;
+}
+
+function analysisSummaryMarkup() {
+  if (!state.analysisResult) return '';
+
+  const item = state.analysisResult;
+  const details = [
+    item.itemType,
+    item.color,
+    item.pattern,
+    item.style,
+    item.season
+  ].filter(Boolean);
+
+  return `
+    <div class="panel stack">
+      <div class="panel-header">
         <div>
-          <h4>${esc(item.name || 'Wardrobe item')}</h4>
-          <p>${esc([item.color, item.style, item.itemType].filter(Boolean).join(' • ') || 'Saved clothing item')}</p>
+          <div class="eyebrow">Latest Analysis</div>
+          <h3>${esc(item.name || 'Untitled item')}</h3>
         </div>
-        <span class="chip accent">${esc(item.isFavorite ? 'Favorite' : item.itemType || 'Item')}</span>
+        ${state.analysisImageDataUrl ? `<img class="thumb" src="${state.analysisImageDataUrl}" alt="Analyzed item preview">` : ''}
       </div>
-      <div class="item-meta">${chipList(tags)}</div>
-    </article>
-  `;
-}
-
-function messageMarkup(message) {
-  const tone = message.role === 'user' ? 'accent' : '';
-  return `
-    <article class="message-card" style="padding:16px">
-      <div class="item-top">
-        <h4>${message.role === 'user' ? 'You' : 'Stylist'}</h4>
-        <span class="chip ${tone}">${esc(message.role)}</span>
+      ${details.length ? `<p>${esc(details.join(' / '))}</p>` : ''}
+      ${item.description || item.aiDescription ? `<p class="secondary">${esc(item.description || item.aiDescription)}</p>` : ''}
+      ${item.tags?.length ? `<div class="tags">${chipList(item.tags)}</div>` : ''}
+      <div class="action-row">
+        <button class="button-primary" data-action="save-analysis" ${!canUseWardrobe() || state.loading ? 'disabled' : ''}>Save To Wardrobe</button>
+        <button class="button-secondary" data-action="jump-wardrobe">Open Wardrobe</button>
+        ${!canUseWardrobe() ? `<span class="helper-text">${databaseConnected() ? 'Sign in to save to your personal wardrobe.' : 'AWS data services need to be configured before saving.'}</span>` : ''}
       </div>
-      <p>${esc(message.text)}</p>
-    </article>
-  `;
-}
-
-function emptyState(title, body) {
-  return `
-    <div class="empty-state" style="padding:20px">
-      <h4 style="margin:0 0 8px">${esc(title)}</h4>
-      <p>${esc(body)}</p>
     </div>
   `;
 }
 
-function wardrobeMarkup() {
+function noticeMarkup() {
+  if (!state.notice.message && !state.loading) return '';
+  const message = state.loading ? state.loadingMessage : state.notice.message;
+  const type = state.loading ? state.notice.type || 'info' : state.notice.type;
   return `
-    <section class="section-shell active fade-in">
-      <div class="surface">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Wardrobe</h3>
-            <p class="section-subtitle">Search, inspect, and upload wardrobe items.</p>
-          </div>
-          <button class="button-ghost" data-action="refresh:wardrobe">Refresh</button>
+    <div class="notice ${esc(type)}" role="status" aria-live="polite">
+      <span>${esc(message)}</span>
+      <button class="close" data-action="dismiss-notice" aria-label="Dismiss notice">x</button>
+    </div>
+  `;
+}
+
+function navMarkup() {
+  return `
+    <nav class="sidebar">
+      <div class="nav-header">
+        <div class="eyebrow">Fashion workflow</div>
+        <h1>Fashion AI</h1>
+        <p>Analyze, save, and style from one place.</p>
+      </div>
+      <div class="nav-items">
+        ${views.map((view) => `
+          <button class="nav-btn ${state.activeView === view.id ? 'active' : ''}" data-action="view:${view.id}">
+            <span>${view.label}</span>
+          </button>
+        `).join('')}
+      </div>
+      <div class="nav-status">
+        <div class="status-item">
+          <span class="dot ${state.system.backend === 'online' ? 'online' : 'offline'}"></span>
+          <span>Backend ${state.system.backend === 'online' ? 'ready' : 'offline'}</span>
         </div>
-        <div class="form-grid" style="margin-bottom:16px">
-          <div class="form-field">
-            <label>Search</label>
-            <input name="wardrobeSearch" placeholder="blazer, denim, white shirt" />
-          </div>
-          <div class="form-field">
-            <label>Filter</label>
-            <select name="wardrobeFilter">
-              <option value="">All items</option>
-              <option value="jacket">Jackets</option>
-              <option value="shirt">Shirts</option>
-              <option value="pants">Pants</option>
-              <option value="dress">Dresses</option>
-              <option value="shoes">Shoes</option>
-            </select>
-          </div>
+        <div class="status-item">
+          <span class="dot ${databaseConnected() ? 'online' : 'offline'}"></span>
+          <span>Database ${databaseConnected() ? 'configured' : 'offline'}</span>
         </div>
-        <div class="split-grid">
-          <form class="stack" data-form="wardrobe-upload">
-            <div class="upload-field">
-              <label>Add wardrobe photos</label>
-              <input type="file" name="images" accept="image/*" multiple required />
-            </div>
-            <button class="button-primary" type="submit">Analyze and add</button>
-            <p class="helper-text">Each image becomes a separate wardrobe item after AI analysis.</p>
-          </form>
-          <div>
-            <div class="notice">Total items: ${formatCount(state.wardrobe.length)}</div>
-            <div style="margin-top:14px" class="notice">Inventory health: ${state.wardrobeStats ? `${formatCount(state.wardrobeStats.stats?.totalItems || 0)} items / ${formatCount(state.wardrobeStats.stats?.totalImages || 0)} images` : 'waiting for sync'}</div>
-          </div>
+        <div class="status-item">
+          <span class="dot ${hasSession() || state.system.wardrobeMode === 'shared' ? 'online' : 'warn'}"></span>
+          <span>${sessionStatusLabel()}</span>
         </div>
       </div>
-      <div class="surface">
-        <div class="cards">
-          ${state.wardrobe.length ? state.wardrobe.map(itemCardMarkup).join('') : emptyState('Your wardrobe is empty', 'Add a few garments to unlock styling and try-on.')}
+    </nav>
+  `;
+}
+
+function analysisViewMarkup() {
+  const analyzeEnabled = state.system.capabilities.analyze !== false;
+  return `
+    <section class="view-content stack-xl">
+      <header class="hero">
+        <div>
+          <div class="eyebrow">Happy Path</div>
+          <h2>Analyze an item, save it, and build recommendations from your wardrobe.</h2>
+          <p>Start by uploading one garment photo. The app will extract tags you can save directly into your ${state.system.wardrobeMode === 'shared' ? 'shared' : 'personal'} wardrobe.</p>
+        </div>
+      </header>
+      <div class="panel stack">
+        <div class="panel-header">
+          <div>
+            <div class="eyebrow">Step 1</div>
+            <h3>Analyze a clothing image</h3>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="analysis-image">Item photo</label>
+          <input id="analysis-image" type="file" accept="image/*" data-action="analysis-file" ${state.loading ? 'disabled' : ''}>
+        </div>
+        <div class="action-row">
+          <button class="button-primary" data-action="analyze-image" ${state.analysisFile && analyzeEnabled && !state.loading ? '' : 'disabled'}>Run Analysis</button>
+          <button class="button-secondary" data-action="clear-analysis" ${state.analysisResult || state.analysisFile ? '' : 'disabled'}>Reset</button>
         </div>
       </div>
+      ${!analyzeEnabled ? '<p class="secondary">Add GEMINI_API_KEY to enable clothing analysis.</p>' : ''}
+      ${analysisSummaryMarkup()}
     </section>
   `;
 }
 
-function chatMarkup() {
+function wardrobeViewMarkup() {
+  const items = wardrobeItems();
+  const canRecommend = canUseWardrobe() && state.wardrobe.length > 0 && state.system.capabilities.recommendations !== false;
+
   return `
-    <section class="section-shell active fade-in">
-      <div class="surface">
-        <div class="section-head">
+    <section class="view-content stack-xl">
+      <header class="view-header split">
+        <div>
+          <div class="eyebrow">Step 2</div>
+          <h2>Wardrobe</h2>
+          <p>${state.wardrobeNote ? esc(state.wardrobeNote) : 'Saved items live here and feed outfit recommendations.'}</p>
+        </div>
+        <div class="inline-controls">
+          <input
+            type="text"
+            placeholder="Search wardrobe"
+            data-action="wardrobe-search"
+            value="${esc(state.wardrobeSearch)}"
+          >
+          <button class="button-secondary" data-action="refresh-wardrobe" ${canUseWardrobe() && !state.loading ? '' : 'disabled'}>Refresh</button>
+        </div>
+      </header>
+
+      <div class="panel stack">
+        <div class="panel-header">
           <div>
-            <h3 class="section-title">Stylist chat</h3>
-            <p class="section-subtitle">Ask for outfits, color pairings, or wardrobe edits.</p>
+            <div class="eyebrow">Step 3</div>
+            <h3>Generate outfit recommendations</h3>
           </div>
-          <button class="button-ghost" data-action="reset:chat">Reset</button>
         </div>
-        <form class="stack" data-form="chat">
-          <div class="form-field">
-            <label>Your message</label>
-            <textarea name="message" placeholder="What should I wear to a rooftop dinner?"></textarea>
-          </div>
-          <button class="button-primary" type="submit">Send to stylist</button>
-        </form>
-      </div>
-      <div class="surface">
-        <div class="cards">
-          ${state.chatMessages.map(messageMarkup).join('')}
+        <div class="inline-controls">
+          <input
+            type="text"
+            placeholder="Occasion"
+            data-action="occasion-input"
+            value="${esc(state.recommendationOccasion)}"
+          >
+          <button class="button-primary" data-action="recommend-outfits" ${canRecommend ? '' : 'disabled'}>Recommend Outfits</button>
         </div>
+        ${!canUseWardrobe() ? `<p class="secondary">${databaseConnected() ? 'Sign in to use your personal wardrobe.' : 'AWS data services are not configured.'}</p>` : ''}
       </div>
+
+      ${state.recommendations.length ? `
+        <div class="result-grid">
+          ${state.recommendations.map((outfit, index) => recommendationMarkup(outfit, index)).join('')}
+        </div>
+      ` : ''}
+
+      ${items.length ? `
+        <div class="items-grid">
+          ${items.map((item) => itemCardMarkup(item)).join('')}
+        </div>
+      ` : state.wardrobeSearch && state.wardrobe.length ? `
+        <div class="panel empty-panel">
+          <h3>No matching items</h3>
+          <p>Try a different wardrobe search.</p>
+        </div>
+      ` : `
+        <div class="panel empty-panel">
+          <h3>${canUseWardrobe() ? 'No wardrobe items yet' : 'Sign in to open your wardrobe'}</h3>
+          <p>${canUseWardrobe() ? 'Analyze something first, then save it here.' : 'Your saved clothing and recommendations are private to your account.'}</p>
+          <button class="button-primary" data-action="view:${canUseWardrobe() ? 'analysis' : 'account'}">${canUseWardrobe() ? 'Go To Analyze' : 'Go To Account'}</button>
+        </div>
+      `}
     </section>
   `;
 }
 
-function analysisMarkup() {
+function chatViewMarkup() {
+  const chatEnabled = state.system.capabilities.chat !== false;
   return `
-    <section class="section-shell active fade-in">
-      <div class="surface">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Image analysis</h3>
-            <p class="section-subtitle">Extract tags, colors, and style metadata from a clothing photo.</p>
-          </div>
+    <section class="view-content stack-xl">
+      <header class="view-header">
+        <div>
+          <div class="eyebrow">Stylist Chat</div>
+          <h2>Ask for styling help</h2>
+          <p>Ask about colors, fit, occasions, or ways to style your saved items.</p>
         </div>
-        <form class="stack" data-form="analysis">
-          <div class="upload-field">
-            <label>Clothing image</label>
-            <input type="file" name="image" accept="image/*" required />
-          </div>
-          <button class="button-primary" type="submit">Analyze image</button>
-        </form>
-        <div id="analysis-result" style="margin-top:16px"></div>
-      </div>
-    </section>
-  `;
-}
-
-function recommendationsMarkup() {
-  return `
-    <section class="section-shell active fade-in">
-      <div class="surface">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Outfit recommendations</h3>
-            <p class="section-subtitle">Build looks from your wardrobe inventory.</p>
-          </div>
-        </div>
-        <form class="stack" data-form="recommendations">
-          <div class="form-grid">
-            <div class="form-field">
-              <label>Occasion</label>
-              <input name="occasion" placeholder="Business meeting" required />
+      </header>
+      <div class="panel stack">
+        <div class="chat-messages">
+          ${state.chatMessages.map((message) => `
+            <div class="message ${message.role}">
+              <p>${esc(message.text)}</p>
             </div>
-            <div class="form-field">
-              <label>Body shape</label>
-              <select name="bodyShape">
-                <option value="">Optional</option>
-                <option>Rectangle</option>
-                <option>Apple</option>
-                <option>Pear</option>
-                <option>Hourglass</option>
-                <option>Inverted Triangle</option>
-              </select>
-            </div>
-            <div class="form-field">
-              <label>Weather</label>
-              <input name="weather" placeholder="Warm, rainy, cold" />
-            </div>
-            <div class="form-field">
-              <label>Use API wardrobe</label>
-              <select name="useDatabase">
-                <option value="true">Yes</option>
-                <option value="false">No</option>
-              </select>
-            </div>
-          </div>
-          <button class="button-primary" type="submit">Generate looks</button>
-        </form>
-      </div>
-      <div class="surface">
-        <div class="cards">
-          ${state.recommendations.length ? state.recommendations.map(recommendationMarkup).join('') : emptyState('No recommendations yet', 'Generate looks using saved wardrobe items.')}
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function recommendationMarkup(outfit) {
-  const items = Array.isArray(outfit.items) ? outfit.items : [];
-  return `
-    <article class="recommendation-card" style="padding:18px">
-      <h4>${esc(outfit.name || outfit.title || 'Outfit suggestion')}</h4>
-      <p style="margin-top:8px">${esc(outfit.reasoning || outfit.stylingTips || 'Recommended styling combination')}</p>
-      <div class="recommendation-meta" style="margin-top:14px">${chipList(items, 'accent')}</div>
-    </article>
-  `;
-}
-
-function tryOnMarkup() {
-  return `
-    <section class="section-shell active fade-in">
-      <div class="surface">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Virtual try-on</h3>
-            <p class="section-subtitle">Combine a garment image with a profile photo or upload.</p>
-          </div>
-        </div>
-        <form class="stack" data-form="tryon">
-          <div class="form-grid">
-            <div class="upload-field">
-              <label>Garment image</label>
-              <input type="file" name="garment" accept="image/*" required />
-            </div>
-            <div class="upload-field">
-              <label>Use profile photo or upload</label>
-              <input type="file" name="userPhoto" accept="image/*" />
-            </div>
-          </div>
-          <button class="button-primary" type="submit">Generate try-on</button>
-        </form>
-      </div>
-      <div class="surface">
-        <div class="preview-box" id="tryon-preview">
-          ${state.previewImage ? `<img alt="Try-on preview" src="${state.previewImage}">` : '<span>Try-on preview will appear here</span>'}
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function profileMarkup() {
-  const profile = state.auth.profile;
-  return `
-    <section class="section-shell active fade-in">
-      <div class="surface">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Profile</h3>
-            <p class="section-subtitle">Session state, photo upload, and account metadata.</p>
-          </div>
-          <button class="button-ghost" data-action="logout">Log out</button>
-        </div>
-        <div class="split-grid">
-          <div class="stack">
-            <div class="notice">Email: ${esc(profile?.email || 'Unknown')}</div>
-            <div class="notice">Username: ${esc(profile?.username || 'Unknown')}</div>
-            <div class="notice">Tier: ${esc(profile?.subscription?.tier || 'guest')}</div>
-            <div class="notice">Profile image: ${profile?.profileImage ? 'available' : 'not set'}</div>
-          </div>
-          <div>
-            <form class="stack" data-form="photo">
-              <div class="upload-field">
-                <label>Upload profile photo</label>
-                <input type="file" name="photo" accept="image/*" required />
-              </div>
-              <button class="button-primary" type="submit">Save photo</button>
-            </form>
-            <button class="button-danger" style="margin-top:12px;width:100%" data-action="remove-photo">Remove profile photo</button>
-          </div>
-        </div>
-      </div>
-      <div class="surface">
-        <div class="preview-box">
-          ${profile?.profileImage ? `<img alt="Profile" src="${profile.profileImage}">` : '<span>Profile photo preview</span>'}
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function shellMarkup() {
-  return `
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">FA</div>
-          <h1>Fashion AI</h1>
-          <p>Product shell for wardrobe intelligence, styling help, and photo-driven try-on.</p>
-        </div>
-        <nav class="nav">
-          ${views.filter(v => v.primary).map((view) => `
-            <button class="${state.activeView === view.id ? 'active' : ''}" data-action="view:${view.id}">
-              <span>
-                <strong style="display:block;text-align:left">${esc(view.label)}</strong>
-                <small style="display:block;color:var(--muted);text-align:left;margin-top:4px">${esc(view.hint)}</small>
-              </span>
-              <span class="dot"></span>
-            </button>
           `).join('')}
-        </nav>
-        <details style="margin-top:12px;padding:0 16px">
-          <summary style="cursor:pointer;color:var(--muted);font-size:0.88rem;padding:8px 0">More tools</summary>
-          <nav class="nav" style="margin-top:8px;padding:0">
-            ${views.filter(v => !v.primary).map((view) => `
-              <button class="${state.activeView === view.id ? 'active' : ''}" data-action="view:${view.id}" style="font-size:0.9rem">
-                <span>
-                  <strong style="display:block;text-align:left">${esc(view.label)}</strong>
-                </span>
-              </button>
-            `).join('')}
-          </nav>
-        </details>
-        <div class="sidebar-footer">
-          <span class="status-pill"><span class="status-indicator"></span>${esc(state.auth.token ? 'Session active' : 'Signed out')}</span>
-          <span>${esc(state.auth.profile?.email || 'No user loaded')}</span>
-          <span>${esc(api.baseUrl)}</span>
         </div>
-      </aside>
-      <main class="main-panel">
-        ${heroMarkup()}
-        <div style="padding: 18px;">
-          ${state.activeView === 'overview' ? overviewMarkup() : ''}
-          ${state.activeView === 'wardrobe' ? wardrobeMarkup() : ''}
-          ${state.activeView === 'chat' ? chatMarkup() : ''}
-          ${state.activeView === 'analysis' ? analysisMarkup() : ''}
-          ${state.activeView === 'recommendations' ? recommendationsMarkup() : ''}
-          ${state.activeView === 'tryon' ? tryOnMarkup() : ''}
-          ${state.activeView === 'profile' ? profileMarkup() : ''}
+        <div class="chat-input">
+          <input type="text" placeholder="Ask about colors, occasions, or how to style saved items." data-action="chat-input" value="${esc(state.chatInput)}" ${state.loading ? 'disabled' : ''}>
+          <button class="button-primary" data-action="send-chat" ${chatEnabled && !state.loading ? '' : 'disabled'}>Send</button>
         </div>
-      </main>
-    </div>
+        ${!chatEnabled ? '<p class="secondary">Add GEMINI_API_KEY to enable stylist chat.</p>' : ''}
+      </div>
+    </section>
+  `;
+}
+
+function tryOnViewMarkup() {
+  const imageGenerationEnabled = state.system.capabilities.imageGeneration === true;
+  const tryOnEnabled = state.system.capabilities.tryOn !== false;
+  return `
+    <section class="view-content stack-xl">
+      <header class="view-header">
+        <div>
+          <div class="eyebrow">Virtual Try-On</div>
+          <h2>Preview a garment on a person photo</h2>
+          <p>Upload a garment image and optionally a person photo. If you are signed in with a profile photo, the app can reuse it.</p>
+        </div>
+      </header>
+      <div class="panel stack">
+        <div class="panel-header">
+          <div>
+            <div class="eyebrow">Text To Image</div>
+            <h3>Generate a fresh fashion image from a prompt</h3>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="image-prompt">Prompt</label>
+          <textarea id="image-prompt" rows="4" data-action="image-prompt" ${state.loading ? 'disabled' : ''}>${esc(state.imagePrompt)}</textarea>
+        </div>
+        <div class="action-row">
+          <button class="button-primary" data-action="generate-image" ${imageGenerationEnabled && !state.loading ? '' : 'disabled'}>Generate Image</button>
+        </div>
+        ${!imageGenerationEnabled ? '<p class="secondary">Configure Cloudflare image generation to enable this feature.</p>' : ''}
+      </div>
+      ${state.generatedImage ? `
+        <div class="panel">
+          <img class="preview-image" src="${state.generatedImage}" alt="Generated fashion image">
+        </div>
+      ` : ''}
+      <div class="panel stack">
+        <div class="form-group">
+          <label for="tryon-garment">Garment image</label>
+          <input id="tryon-garment" type="file" accept="image/*" data-action="tryon-garment" ${state.loading ? 'disabled' : ''}>
+        </div>
+        <div class="form-group">
+          <label for="tryon-user-photo">Person photo</label>
+          <input id="tryon-user-photo" type="file" accept="image/*" data-action="tryon-user-photo" ${state.loading ? 'disabled' : ''}>
+        </div>
+        <div class="action-row">
+          <button class="button-primary" data-action="generate-tryon" ${state.tryOnGarmentFile && tryOnEnabled && !state.loading ? '' : 'disabled'}>Generate Try-On</button>
+        </div>
+        ${!tryOnEnabled ? '<p class="secondary">Add GEMINI_API_KEY to enable virtual try-on.</p>' : ''}
+      </div>
+      ${state.previewImage ? `
+        <div class="panel">
+          <img class="preview-image" src="${state.previewImage}" alt="Virtual try-on preview">
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
+function accountViewMarkup() {
+  const profile = state.auth.profile;
+  const authEnabled = state.system.capabilities.auth !== false;
+  const sharedWardrobe = state.system.wardrobeMode === 'shared';
+
+  if (hasSession()) {
+    return `
+      <section class="view-content stack-xl">
+        <header class="view-header">
+          <div>
+          <div class="eyebrow">Account</div>
+          <h2>${esc(profile.username || profile.email)}</h2>
+          <p>${esc(profile.email || '')}</p>
+          </div>
+        </header>
+        <div class="panel stack">
+          ${profile.profileImage ? `<img class="profile-photo" src="${esc(profile.profileImage)}" alt="Profile">` : ''}
+          <p class="secondary">Subscription: ${esc(profile.subscription?.tier || 'free')}</p>
+          <div class="form-group">
+            <label for="profile-photo">Profile photo for virtual try-on</label>
+            <input id="profile-photo" type="file" accept="image/jpeg,image/png,image/webp" data-action="profile-photo" ${state.loading ? 'disabled' : ''}>
+          </div>
+          <div class="action-row">
+            <button class="button-primary" data-action="upload-profile-photo" ${state.profilePhotoFile && !state.loading ? '' : 'disabled'}>Upload Photo</button>
+            ${profile.profileImage ? '<button class="button-danger" data-action="remove-profile-photo">Remove Photo</button>' : ''}
+            <button class="button-secondary" data-action="logout">Sign Out</button>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="view-content stack-xl">
+      <header class="view-header">
+        <div>
+          <div class="eyebrow">Account</div>
+          <h2>${sharedWardrobe ? 'Sign in is optional' : 'Sign in to your wardrobe'}</h2>
+          <p>${sharedWardrobe ? 'The shared demo wardrobe works without an account.' : 'Your account keeps saved clothing, recommendations, and profile photo private.'}</p>
+        </div>
+      </header>
+      <div class="panel stack auth-panel">
+        <div class="toggle-row">
+          <button class="${state.accountMode === 'login' ? 'button-primary' : 'button-secondary'}" data-action="mode:login">Login</button>
+          <button class="${state.accountMode === 'register' ? 'button-primary' : 'button-secondary'}" data-action="mode:register">Register</button>
+        </div>
+        <form class="stack" data-action="account-submit">
+          ${state.accountMode === 'register' ? `
+            <div class="form-group">
+              <label for="account-username">Username</label>
+              <input id="account-username" name="username" type="text" placeholder="Your name">
+            </div>
+          ` : ''}
+          <div class="form-group">
+            <label for="account-email">Email</label>
+            <input id="account-email" name="email" type="email" placeholder="name@example.com" required>
+          </div>
+          <div class="form-group">
+            <label for="account-password">Password</label>
+            <input id="account-password" name="password" type="password" placeholder="At least 8 characters" required>
+          </div>
+          <button class="button-primary" type="submit" ${authEnabled && !state.loading ? '' : 'disabled'}>${state.accountMode === 'login' ? 'Login' : 'Create Account'}</button>
+        </form>
+        ${!authEnabled ? '<p class="secondary">Configure Amazon Cognito to enable accounts.</p>' : ''}
+        ${state.pendingConfirmationEmail ? `
+          <form class="stack" data-action="confirm-submit">
+            <div class="form-group">
+              <label for="account-confirmation-code">Verification code</label>
+              <input
+                id="account-confirmation-code"
+                name="code"
+                type="text"
+                placeholder="Email verification code"
+                value="${esc(state.pendingConfirmationCode)}"
+                required
+              >
+            </div>
+            <button class="button-secondary" type="submit">Confirm Account</button>
+          </form>
+        ` : ''}
+      </div>
+    </section>
   `;
 }
 
 function render() {
-  root.innerHTML = shellMarkup();
-}
-
-function setNotice(message, type = 'info') {
-  state.appStatus = message;
-  state.appError = type === 'error' ? message : null;
-}
-
-function setLoading(loading, message = null) {
-  state.loading = loading;
-  if (message) setNotice(message, 'info');
-  render();
-}
-
-async function loadSession() {
-  try {
-    const requests = [api.health()];
-
-    if (state.auth.token) {
-      requests.push(api.profile(), api.wardrobe({ limit: 20 }), api.wardrobeStats());
-    }
-
-    const results = await Promise.allSettled(requests);
-    const healthResult = results[0];
-    const profileResult = results[1];
-    const wardrobeResult = results[2];
-    const statsResult = results[3];
-
-    if (profileResult?.status === 'fulfilled') {
-      state.auth.profile = profileResult.value.profile;
-    }
-
-    if (wardrobeResult?.status === 'fulfilled') {
-      state.wardrobe = wardrobeResult.value.items || [];
-    }
-
-    if (statsResult?.status === 'fulfilled') {
-      state.wardrobeStats = statsResult.value;
-    }
-
-    if (healthResult.status === 'fulfilled') {
-      setNotice(`Backend healthy: ${healthResult.value.status}`, 'info');
-    }
-  } catch (error) {
-    setNotice(error.message, 'error');
-  }
-
-  render();
-}
-
-async function submitAuth(formData) {
-  const payload = {
-    email: formData.get('email')?.toString().trim(),
-    password: formData.get('password')?.toString(),
-    username: formData.get('username')?.toString().trim()
+  const focusedAction = document.activeElement?.dataset?.action;
+  const selectionStart = document.activeElement?.selectionStart;
+  const viewMap = {
+    analysis: analysisViewMarkup,
+    wardrobe: wardrobeViewMarkup,
+    chat: chatViewMarkup,
+    tryon: tryOnViewMarkup,
+    account: accountViewMarkup
   };
 
-  const action = state.authMode === 'login' ? api.login(payload) : api.register(payload);
-  const result = await action;
-  api.setToken(result.token);
-  state.auth.token = result.token;
-  state.auth.profile = (await api.profile()).profile;
-  state.activeView = 'overview';
-  await loadSession();
+  const viewMarkup = (viewMap[state.activeView] || analysisViewMarkup)();
+
+  root.innerHTML = `
+    ${navMarkup()}
+    <main class="main">
+      ${noticeMarkup()}
+      ${viewMarkup}
+    </main>
+  `;
+
+  attachListeners();
+  if (focusedAction) {
+    const focusedElement = root.querySelector(`[data-action="${CSS.escape(focusedAction)}"]`);
+    focusedElement?.focus();
+    if (Number.isInteger(selectionStart) && focusedElement?.setSelectionRange) {
+      focusedElement.setSelectionRange(selectionStart, selectionStart);
+    }
+  }
 }
 
-async function submitWardrobe(formData) {
-  const files = formData.getAll('images');
-  if (!files.length) throw new Error('Add at least one image.');
-  await api.addWardrobeItems(files);
-  await loadSession();
-  state.activeView = 'wardrobe';
-}
-
-async function submitChat(formData) {
-  const message = formData.get('message')?.toString().trim();
-  if (!message) return;
-  state.chatMessages.push({ role: 'user', text: message });
-  render();
-
-  const result = await api.chat({
-    message,
-    wardrobeContext: state.wardrobe,
-    conversationHistory: state.chatMessages.slice(-8).map((entry) => ({ role: entry.role, content: entry.text })),
+function attachListeners() {
+  root.querySelectorAll('[data-action]').forEach((element) => {
+    const action = element.dataset.action;
+    if (element.tagName === 'FORM') {
+      element.addEventListener('submit', handleAction);
+      return;
+    }
+    if (action === 'chat-input' || action === 'wardrobe-search' || action === 'occasion-input' || action === 'image-prompt') {
+      element.addEventListener('input', handleAction);
+      return;
+    }
+    if (action === 'analysis-file' || action === 'tryon-garment' || action === 'tryon-user-photo' || action === 'profile-photo') {
+      element.addEventListener('change', handleAction);
+      return;
+    }
+    element.addEventListener('click', handleAction);
   });
-
-  state.chatMessages.push({ role: 'assistant', text: result.message || 'No response returned.' });
-  state.activeView = 'chat';
 }
 
-async function submitAnalysis(formData) {
-  const file = formData.get('image');
-  if (!(file instanceof File)) throw new Error('Select an image first.');
-  const result = await api.analyzeImage(file);
-  const target = document.getElementById('analysis-result');
-  if (target) {
-    const tags = result.tags || {};
-    target.innerHTML = `
-      <div class="notice success">
-        <strong>Analysis complete</strong>
-        <div class="chip-row" style="margin-top:10px">${chipList([tags.name, tags.itemType, tags.color, tags.style, ...(tags.tags || [])])}</div>
-      </div>
-    `;
+async function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function refreshWardrobe(showNotice = false) {
+  const wardrobe = await api.wardrobe();
+  state.wardrobe = wardrobe.items;
+  state.wardrobeNote = wardrobe.note || '';
+  if (showNotice) {
+    setNotice(`Loaded ${wardrobe.items.length} wardrobe item${wardrobe.items.length === 1 ? '' : 's'}.`, 'success');
+  } else {
+    render();
   }
 }
 
-async function submitRecommendations(formData) {
-  const occasion = formData.get('occasion')?.toString().trim();
-  if (!occasion) throw new Error('Occasion is required.');
+async function refreshSession() {
+  if (!state.auth.token) {
+    state.auth.profile = null;
+    api.setSession(null);
+    return;
+  }
+
+  try {
+    state.auth.profile = await api.me();
+    api.setSession({
+      ...api.getSession(),
+      token: state.auth.token,
+      user: state.auth.profile
+    });
+  } catch (error) {
+    api.setSession(null);
+    state.auth.token = null;
+    state.auth.profile = null;
+    throw error;
+  }
+}
+
+async function submitAccountForm(form) {
+  const formData = new FormData(form);
   const payload = {
-    wardrobeItems: state.wardrobe,
-    occasion,
-    bodyShape: formData.get('bodyShape')?.toString().trim() || null,
-    weather: formData.get('weather')?.toString().trim() || null,
-    useDatabase: formData.get('useDatabase')?.toString() === 'true'
+    email: String(formData.get('email') || '').trim(),
+    password: String(formData.get('password') || '')
   };
-  const result = await api.recommendations(payload);
-  state.recommendations = result.outfits || [];
-  state.activeView = 'recommendations';
-}
 
-async function submitTryOn(formData) {
-  const garment = formData.get('garment');
-  const userPhoto = formData.get('userPhoto');
-  if (!(garment instanceof File)) throw new Error('Garment image is required.');
-  const result = await api.tryOn(garment, userPhoto instanceof File && userPhoto.size ? userPhoto : null);
-  state.previewImage = result.image;
-  const preview = document.getElementById('tryon-preview');
-  if (preview && result.image) preview.innerHTML = `<img alt="Try-on preview" src="${result.image}">`;
-}
+  if (state.accountMode === 'register') {
+    payload.username = String(formData.get('username') || '').trim();
+  }
 
-async function uploadProfilePhoto(formData) {
-  const file = formData.get('photo');
-  if (!(file instanceof File)) throw new Error('Select a profile photo.');
-  await api.updateProfilePhoto(file);
-  await loadSession();
-  state.activeView = 'profile';
-}
+  setLoading(true, state.accountMode === 'login' ? 'Signing in...' : 'Creating account...');
 
-function bindInteractions() {
-  root.addEventListener('click', async (event) => {
-    const target = event.target.closest('[data-action]');
-    if (!target) return;
+  try {
+    const result = state.accountMode === 'login'
+      ? await api.login(payload)
+      : await api.register(payload);
 
-    const action = target.dataset.action;
-    if (action.startsWith('view:')) {
-      state.activeView = action.split(':')[1];
-      render();
-      return;
-    }
-
-    if (action === 'auth-mode') {
-      state.authMode = target.dataset.mode || 'login';
-      render();
-      return;
-    }
-
-    if (action === 'logout') {
-      api.setToken(null);
+    if (!result.token) {
+      api.setSession(null);
       state.auth.token = null;
       state.auth.profile = null;
-      state.wardrobe = [];
-      state.recommendations = [];
-      state.chatMessages = [{ role: 'assistant', text: 'Ask for outfit ideas, styling advice, or wardrobe combinations.' }];
-      render();
-      return;
-    }
-
-    if (action === 'remove-photo') {
-      await api.removeProfilePhoto();
-      await loadSession();
-      return;
-    }
-
-    if (action === 'reset:chat') {
-      state.chatMessages = [{ role: 'assistant', text: 'Ask for outfit ideas, styling advice, or wardrobe combinations.' }];
-      render();
-    }
-  });
-
-  root.addEventListener('submit', async (event) => {
-    const form = event.target.closest('form[data-form]');
-    if (!form) return;
-    event.preventDefault();
-
-    const formData = new FormData(form);
-
-    try {
-      setLoading(true, 'Working');
-      if (form.dataset.form === 'auth') await submitAuth(formData);
-      if (form.dataset.form === 'wardrobe-upload') await submitWardrobe(formData);
-      if (form.dataset.form === 'chat') await submitChat(formData);
-      if (form.dataset.form === 'analysis') await submitAnalysis(formData);
-      if (form.dataset.form === 'recommendations') await submitRecommendations(formData);
-      if (form.dataset.form === 'tryon') await submitTryOn(formData);
-      if (form.dataset.form === 'photo') await uploadProfilePhoto(formData);
-      setNotice('Ready', 'info');
-    } catch (error) {
-      setNotice(error.message, 'error');
-    } finally {
+      state.pendingConfirmationEmail = payload.email;
+      state.pendingConfirmationCode = '';
+      state.activeView = 'account';
       setLoading(false);
-      await loadSession();
+      setNotice(result.message || 'Account created. Check your email to finish signing in.', 'success');
+      return;
     }
-  });
+
+    const session = {
+      token: result.token,
+      idToken: result.idToken,
+      refreshToken: result.refreshToken,
+      user: result.user
+    };
+    api.setSession(session);
+    state.auth.token = session.token;
+    state.auth.profile = session.user;
+    state.pendingConfirmationEmail = '';
+    state.pendingConfirmationCode = '';
+    state.activeView = 'analysis';
+    await refreshWardrobe();
+    setLoading(false);
+    setNotice('Account ready. You can now save analyzed items to your wardrobe.', 'success');
+  } catch (error) {
+    setLoading(false);
+    setNotice(error.message, 'error');
+  }
 }
 
-async function bootstrap() {
-  bindInteractions();
-  await loadSession();
+async function submitConfirmationForm(form) {
+  const formData = new FormData(form);
+  const code = String(formData.get('code') || '').trim();
+  if (!state.pendingConfirmationEmail || !code) {
+    setNotice('Enter the verification code from your email.', 'error');
+    return;
+  }
+
+  setLoading(true, 'Confirming account...');
+  try {
+    await api.confirmRegistration({
+      email: state.pendingConfirmationEmail,
+      code
+    });
+    state.pendingConfirmationCode = '';
+    state.accountMode = 'login';
+    setLoading(false);
+    setNotice('Account confirmed. Sign in to continue.', 'success');
+  } catch (error) {
+    setLoading(false);
+    setNotice(error.message, 'error');
+  }
+}
+
+async function handleAction(event) {
+  event.preventDefault();
+  const action = event.currentTarget.dataset.action;
+
+  if (!action) return;
+
+  if (action.startsWith('view:')) {
+    state.activeView = action.replace('view:', '');
+    render();
+    return;
+  }
+
+  if (action.startsWith('mode:')) {
+    state.accountMode = action.replace('mode:', '');
+    render();
+    return;
+  }
+
+  if (action === 'dismiss-notice') {
+    state.notice = { type: 'info', message: '' };
+    render();
+    return;
+  }
+
+  if (action === 'chat-input') {
+    state.chatInput = event.currentTarget.value;
+    render();
+    return;
+  }
+
+  if (action === 'wardrobe-search') {
+    state.wardrobeSearch = event.currentTarget.value;
+    render();
+    return;
+  }
+
+  if (action === 'occasion-input') {
+    state.recommendationOccasion = event.currentTarget.value;
+    render();
+    return;
+  }
+
+  if (action === 'image-prompt') {
+    state.imagePrompt = event.currentTarget.value;
+    render();
+    return;
+  }
+
+  if (action === 'analysis-file') {
+    state.analysisFile = event.currentTarget.files?.[0] || null;
+    state.analysisResult = null;
+    state.analysisImageDataUrl = '';
+    render();
+    return;
+  }
+
+  if (action === 'tryon-garment') {
+    state.tryOnGarmentFile = event.currentTarget.files?.[0] || null;
+    render();
+    return;
+  }
+
+  if (action === 'tryon-user-photo') {
+    state.tryOnUserPhotoFile = event.currentTarget.files?.[0] || null;
+    render();
+    return;
+  }
+
+  if (action === 'profile-photo') {
+    state.profilePhotoFile = event.currentTarget.files?.[0] || null;
+    render();
+    return;
+  }
+
+  if (action === 'account-submit') {
+    await submitAccountForm(event.currentTarget);
+    return;
+  }
+
+  if (action === 'confirm-submit') {
+    await submitConfirmationForm(event.currentTarget);
+    return;
+  }
+
+  if (action === 'logout') {
+    api.setSession(null);
+    state.auth.token = null;
+    state.auth.profile = null;
+    state.pendingConfirmationEmail = '';
+    state.pendingConfirmationCode = '';
+    state.recommendations = [];
+    state.activeView = 'wardrobe';
+    if (canUseWardrobe()) await refreshWardrobe();
+    else state.wardrobe = [];
+    setNotice(state.system.wardrobeMode === 'shared' ? 'Signed out. Shared wardrobe mode is still available.' : 'Signed out.', 'success');
+    return;
+  }
+
+  if (action === 'analyze-image') {
+    if (!state.analysisFile) return;
+    setLoading(true, 'Analyzing clothing image...');
+    try {
+      const [analysisResult, imageDataUrl] = await Promise.all([
+        api.analyzeImage(state.analysisFile),
+        fileToDataUrl(state.analysisFile)
+      ]);
+      state.analysisResult = analysisResult;
+      state.analysisImageDataUrl = imageDataUrl;
+      setLoading(false);
+      setNotice('Analysis complete. Save it to your wardrobe when you are ready.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'clear-analysis') {
+    state.analysisFile = null;
+    state.analysisResult = null;
+    state.analysisImageDataUrl = '';
+    render();
+    return;
+  }
+
+  if (action === 'save-analysis') {
+    if (!state.analysisResult || !state.analysisImageDataUrl) return;
+    setLoading(true, 'Saving item to wardrobe...');
+    try {
+      const savedItem = await api.saveAnalyzedItem({
+        analysis: state.analysisResult,
+        imageDataUrl: state.analysisImageDataUrl
+      });
+      state.wardrobe.unshift(savedItem);
+      state.activeView = 'wardrobe';
+      setLoading(false);
+      setNotice('Saved to wardrobe. You can generate recommendations from it now.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'jump-wardrobe') {
+    state.activeView = 'wardrobe';
+    render();
+    return;
+  }
+
+  if (action === 'refresh-wardrobe') {
+    setLoading(true, 'Refreshing wardrobe...');
+    try {
+      await refreshWardrobe(true);
+      setLoading(false);
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'delete-item') {
+    const itemId = event.currentTarget.dataset.id;
+    if (!itemId || !window.confirm('Delete this wardrobe item?')) return;
+    setLoading(true, 'Deleting wardrobe item...');
+    try {
+      await api.deleteWardrobeItem(itemId);
+      state.wardrobe = state.wardrobe.filter((item) => (item.id || item.itemId || item._id) !== itemId);
+      state.recommendations = [];
+      setLoading(false);
+      setNotice('Wardrobe item deleted.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'upload-profile-photo') {
+    if (!state.profilePhotoFile) return;
+    setLoading(true, 'Uploading profile photo...');
+    try {
+      const result = await api.updateProfilePhoto(state.profilePhotoFile);
+      state.auth.profile = { ...state.auth.profile, profileImage: result.profileImage || null };
+      state.profilePhotoFile = null;
+      api.setSession({ ...api.getSession(), user: state.auth.profile });
+      setLoading(false);
+      setNotice('Profile photo updated.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'remove-profile-photo') {
+    setLoading(true, 'Removing profile photo...');
+    try {
+      await api.removeProfilePhoto();
+      state.auth.profile = { ...state.auth.profile, profileImage: null };
+      api.setSession({ ...api.getSession(), user: state.auth.profile });
+      setLoading(false);
+      setNotice('Profile photo removed.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'recommend-outfits') {
+    if (!state.recommendationOccasion.trim()) {
+      setNotice('Add an occasion first.', 'error');
+      return;
+    }
+
+    setLoading(true, 'Generating outfit recommendations...');
+    try {
+      state.recommendations = await api.recommendations({
+        occasion: state.recommendationOccasion.trim(),
+        useDatabase: true
+      });
+      setLoading(false);
+      setNotice('Recommendations ready.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'send-chat') {
+    const chatInput = root.querySelector('[data-action="chat-input"]');
+    const message = String(chatInput?.value || '').trim();
+    if (!message) return;
+
+    state.chatMessages.push({ role: 'user', text: message });
+    state.chatInput = '';
+    setLoading(true, 'Getting stylist response...');
+
+    try {
+      const reply = await api.chat({
+        message,
+        conversationHistory: state.chatMessages.slice(0, -1).map((entry) => ({
+          role: entry.role,
+          content: entry.text
+        }))
+      });
+      state.chatMessages.push({ role: 'assistant', text: reply });
+      setLoading(false);
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+    return;
+  }
+
+  if (action === 'generate-tryon') {
+    if (!state.tryOnGarmentFile) {
+      setNotice('Choose a garment image first.', 'error');
+      return;
+    }
+
+    setLoading(true, 'Generating virtual try-on...');
+    try {
+      const result = await api.tryOn(state.tryOnGarmentFile, state.tryOnUserPhotoFile || null);
+      state.previewImage = result.image;
+      setLoading(false);
+      setNotice(result.message || 'Try-on generated.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+  }
+
+  if (action === 'generate-image') {
+    if (!state.imagePrompt.trim()) {
+      setNotice('Add a prompt first.', 'error');
+      return;
+    }
+
+    setLoading(true, 'Generating fashion image...');
+    try {
+      const result = await api.generateImage(state.imagePrompt.trim());
+      state.generatedImage = result.image;
+      setLoading(false);
+      setNotice('Image generated.', 'success');
+    } catch (error) {
+      setLoading(false);
+      setNotice(error.message, 'error');
+    }
+  }
+}
+
+async function init() {
+  setNotice('Checking backend...', 'info');
+
+  try {
+    const health = await api.health();
+    state.system.backend = 'online';
+    state.system.database = health.database || 'unknown';
+    state.system.wardrobeMode = health.wardrobeMode || 'shared';
+    state.system.capabilities = health.capabilities || {};
+
+    if (state.auth.token) {
+      try {
+        await refreshSession();
+      } catch (error) {
+        api.setSession(null);
+        state.auth.token = null;
+        state.auth.profile = null;
+        setNotice('Session expired. Shared wardrobe mode is still available.', 'warn');
+      }
+    }
+
+    if (state.system.wardrobeMode === 'per-user' && !hasSession()) state.activeView = 'account';
+
+    if (canUseWardrobe()) {
+      try {
+        await refreshWardrobe();
+      } catch (error) {
+        state.system.database = 'disconnected';
+        setNotice('The backend is online, but the wardrobe database is unavailable.', 'warn');
+      }
+    }
+
+    if (state.system.database !== 'disconnected') setNotice('', 'info');
+  } catch (error) {
+    state.system.backend = 'offline';
+    state.system.database = 'unknown';
+    setNotice('Backend offline. Start the server to use the app shell.', 'warn');
+  }
+
   render();
 }
 
-bootstrap();
+init();

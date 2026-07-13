@@ -8,8 +8,8 @@ const axios = require('axios');
 const sharp = require('sharp');
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || 'gemini-1.5-flash';
-const VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-1.5-flash';
+const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || 'gemini-2.5-flash';
+const VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
 const VISION_MAX_DIM = parseInt(process.env.GEMINI_VISION_MAX_DIM, 10) || 1024;
 
 function getApiUrl(model, method = 'generateContent') {
@@ -20,6 +20,7 @@ function getApiUrl(model, method = 'generateContent') {
 
 async function callGemini(model, contents, options = {}) {
   const url = getApiUrl(model);
+  const { timeout = 60000, ...generationOptions } = options;
   const body = {
     contents,
     generationConfig: {
@@ -27,19 +28,28 @@ async function callGemini(model, contents, options = {}) {
       topP: options.topP ?? 0.9,
       topK: options.topK ?? 40,
       maxOutputTokens: options.maxOutputTokens ?? 8192,
-      ...options
+      ...generationOptions
     }
   };
   const res = await axios.post(url, body, {
     headers: { 'Content-Type': 'application/json' },
-    timeout: options.timeout ?? 60000
+    timeout
   });
-  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const text = res.data?.candidates?.[0]?.content?.parts
+    ?.map((part) => part.text || '')
+    .join('');
   if (!text) {
     const err = res.data?.promptFeedback?.blockReason || 'No text in response';
     throw new Error(err);
   }
   return text;
+}
+
+function parseJsonResponse(text, isValid, label) {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  const value = JSON.parse(cleaned);
+  if (!isValid(value)) throw new Error(`Gemini returned invalid ${label} data`);
+  return value;
 }
 
 async function resizeImage(buffer, maxDim = VISION_MAX_DIM) {
@@ -90,7 +100,8 @@ Be friendly, helpful, and provide practical fashion advice.`;
       success: true,
       message: response.trim(),
       model: CHAT_MODEL,
-      usage: {}
+      usage: {},
+      rawResponse: response
     };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
@@ -136,19 +147,16 @@ Be thorough. If size/brand is not visible, use "unknown". Return ONLY valid JSON
       ]
     }];
 
-    const response = await callGemini(VISION_MODEL, contents, { temperature: 0.3 });
-    const text = response.trim();
-
-    try {
-      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/) ||
-        text.match(/```\n([\s\S]*?)\n```/) ||
-        text.match(/\{[\s\S]*\}/);
-      const jsonText = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : text;
-      const tags = JSON.parse(jsonText);
-      return { success: true, tags, rawResponse: text, model: VISION_MODEL };
-    } catch {
-      return { success: true, tags: null, rawResponse: text, error: 'Could not parse JSON', model: VISION_MODEL };
-    }
+    const response = await callGemini(VISION_MODEL, contents, {
+      temperature: 0.3,
+      responseMimeType: 'application/json'
+    });
+    const tags = parseJsonResponse(
+      response,
+      (value) => value && !Array.isArray(value) && typeof value === 'object' && typeof value.name === 'string',
+      'clothing analysis'
+    );
+    return { success: true, tags, rawResponse: response, model: VISION_MODEL };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
     console.error('Gemini image analysis error:', msg);
@@ -173,22 +181,21 @@ async function getOutfitRecommendationsGemini(wardrobeItems, occasion, bodyShape
     prompt += `\nFor each outfit provide: 1) List of items, 2) Why it works, 3) Styling tips, 4) Body shape flattery (if applicable). Return as a JSON array of outfit objects.`;
 
     const contents = [{ role: 'user', parts: [{ text: prompt }] }];
-    const response = await callGemini(CHAT_MODEL, contents, { temperature: 0.7 });
-
-    try {
-      const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/) ||
-        response.match(/\[[\s\S]*\]/);
-      const jsonText = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : response;
-      const outfits = JSON.parse(jsonText);
-      return {
-        success: true,
-        outfits: Array.isArray(outfits) ? outfits : [outfits],
-        rawResponse: response,
-        model: CHAT_MODEL
-      };
-    } catch {
-      return { success: true, outfits: null, rawResponse: response, error: 'Could not parse JSON', model: CHAT_MODEL };
-    }
+    const response = await callGemini(CHAT_MODEL, contents, {
+      temperature: 0.7,
+      responseMimeType: 'application/json'
+    });
+    const outfits = parseJsonResponse(
+      response,
+      (value) => Array.isArray(value) && value.length > 0 && value.every((outfit) => outfit && typeof outfit === 'object'),
+      'outfit recommendation'
+    );
+    return {
+      success: true,
+      outfits,
+      rawResponse: response,
+      model: CHAT_MODEL
+    };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
     console.error('Gemini recommendations error:', msg);
@@ -213,15 +220,16 @@ async function rateClothingItemGemini(itemDescription, itemImage = null, bodySha
 
     const contents = [{ role: 'user', parts }];
     const model = itemImage ? VISION_MODEL : CHAT_MODEL;
-    const response = await callGemini(model, contents, { temperature: 0.3 });
-
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      const rating = JSON.parse(jsonMatch ? jsonMatch[0] : response);
-      return { success: true, rating, rawResponse: response };
-    } catch {
-      return { success: true, rating: null, rawResponse: response };
-    }
+    const response = await callGemini(model, contents, {
+      temperature: 0.3,
+      responseMimeType: 'application/json'
+    });
+    const rating = parseJsonResponse(
+      response,
+      (value) => value && !Array.isArray(value) && typeof value === 'object',
+      'clothing rating'
+    );
+    return { success: true, rating, rawResponse: response };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
     console.error('Gemini rate item error:', msg);
@@ -233,5 +241,6 @@ module.exports = {
   chatWithGemini,
   analyzeClothingImageGemini,
   getOutfitRecommendationsGemini,
-  rateClothingItemGemini
+  rateClothingItemGemini,
+  parseJsonResponse
 };

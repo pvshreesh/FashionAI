@@ -20,5 +20,5 @@ if (fs.existsSync(envPath)) {
 
 fs.copyFileSync(examplePath, envPath);
 console.log('Created .env from template.');
-console.log('Edit code/backend/.env and add your real values (DATABASE_URL, etc.)');
+console.log('Edit code/backend/.env and add your real Cognito, DynamoDB, S3, and Gemini values.');
 console.log('Never commit .env - it is gitignored.');

@@ -1,0 +1,53 @@
+name: Deploy Backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: AWS stage to deploy
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+  push:
+    branches:
+      - main
+    paths:
+      - "code/backend/**"
+      - ".github/workflows/deploy-backend.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          STAGE: ${{ github.event.inputs.stage || 'dev' }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/fashion-ai-$STAGE-backend"
+          docker build -t $IMAGE_URI:${GITHUB_SHA} -t $IMAGE_URI:latest code/backend
+          docker push $IMAGE_URI:${GITHUB_SHA}
+          docker push $IMAGE_URI:latest
+
+      - name: Trigger App Runner deployment
+        env:
+          APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
+        run: aws apprunner start-deployment --service-arn "$APP_RUNNER_SERVICE_ARN"

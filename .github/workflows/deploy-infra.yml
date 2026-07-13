@@ -1,0 +1,53 @@
+name: Deploy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: AWS stage to deploy
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/**"
+      - ".github/workflows/deploy-infra.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Install infra dependencies
+        working-directory: infra
+        run: npm ci
+
+      - name: CDK bootstrap check
+        working-directory: infra
+        run: npx cdk bootstrap
+
+      - name: Deploy stack
+        working-directory: infra
+        env:
+          STAGE: ${{ github.event.inputs.stage || 'dev' }}
+        run: npx cdk deploy FashionAi-$STAGE --require-approval never

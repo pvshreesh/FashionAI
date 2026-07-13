@@ -5,6 +5,7 @@
 
 const geminiService = require('./geminiService');
 const geminiTryOn = require('./geminiTryOn');
+const { generateImageFromPrompt: generateCloudflareImage } = require('./cloudflareImageService');
 
 /**
  * Chat with AI
@@ -41,10 +42,18 @@ async function virtualTryOn(userPhotoDataUrl, garmentImageBuffer, garmentMimeTyp
   return await geminiTryOn.virtualTryOnGemini(userPhotoDataUrl, garmentImageBuffer, garmentMimeType);
 }
 
+/**
+ * Generate an image from a text prompt
+ */
+async function generateImageFromPrompt(prompt, options = {}) {
+  return await generateCloudflareImage(prompt, options);
+}
+
 module.exports = {
   chatWithAI,
   analyzeClothingImage,
   getOutfitRecommendations,
   rateClothingItem,
-  virtualTryOn
+  virtualTryOn,
+  generateImageFromPrompt
 };

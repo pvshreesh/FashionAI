@@ -1,14 +1,43 @@
 const express = require('express');
 const multer = require('multer');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { optionalAuthenticate } = require('../middleware/auth');
 const {
   chatWithAI,
   analyzeClothingImage,
   getOutfitRecommendations,
   rateClothingItem,
-  virtualTryOn
+  virtualTryOn,
+  generateImageFromPrompt
 } = require('../services/aiService');
+const { resolveStoredImageDataUrl } = require('../utils/imageStorage');
+const { getWardrobeOwnerId, isSharedWardrobeEnabled } = require('../config/wardrobeMode');
+const {
+  canUserGetRecommendation,
+  getUserById,
+  incrementRecommendationCount
+} = require('../repositories/usersRepository');
+const { listWardrobeItems } = require('../repositories/wardrobeRepository');
+
+function normalizeChatPayload(body) {
+  if (Array.isArray(body)) {
+    const conversationHistory = body.map((message) => ({
+      role: message.role,
+      content: message.content || message.text || ''
+    }));
+    const lastUserMessage = [...conversationHistory].reverse().find((message) => message.role === 'user');
+    return {
+      message: lastUserMessage?.content || '',
+      conversationHistory: lastUserMessage
+        ? conversationHistory.slice(0, conversationHistory.lastIndexOf(lastUserMessage))
+        : conversationHistory,
+      wardrobeContext: null,
+      profileImage: null
+    };
+  }
+
+  return body || {};
+}
 
 // Configure multer for image uploads (try-on sends 2 images)
 const upload = multer({
@@ -31,54 +60,47 @@ const upload = multer({
  * Chat with AI fashion assistant
  * Optional: authenticate for personalized responses with wardrobe context
  */
-router.post('/chat', authenticate, async (req, res) => {
+router.post('/chat', optionalAuthenticate, async (req, res) => {
   try {
-    const { message, wardrobeContext, conversationHistory, profileImage } = req.body;
+    const { message, wardrobeContext, conversationHistory, profileImage } = normalizeChatPayload(req.body);
 
-    if (!message) {
+    if (!message || typeof message !== 'string' || message.trim().length > 4000) {
       return res.status(400).json({
         success: false,
-        error: 'Message is required'
+        error: 'Message must be between 1 and 4000 characters.'
       });
     }
 
     // Fetch wardrobe for context (for MVP: allow without auth)
     let contextToUse = wardrobeContext;
-    if (!wardrobeContext) {
+    const wardrobeOwnerId = getWardrobeOwnerId(req);
+    if (!wardrobeContext && wardrobeOwnerId) {
       try {
-        const WardrobeItem = require('../models/WardrobeItem');
-        const mongoose = require('mongoose');
-        
-        // For MVP: Try to fetch items even without auth (use temp userId)
-        let query = {};
-        if (req.user) {
-          query.userId = req.user._id;
-        } else {
-          // For MVP: Use temp userId if database is connected
-          if (mongoose.connection.readyState === 1) {
-            query.userId = new mongoose.Types.ObjectId('000000000000000000000000');
-          }
-        }
-        
-        // Only fetch if database is connected
-        if (mongoose.connection.readyState === 1) {
-          const items = await WardrobeItem.find(query).limit(20);
-          contextToUse = items.map(item => ({
-            name: item.name,
-            itemType: item.itemType,
-            color: item.color,
-            style: item.style,
-            tags: item.tags || []
-          }));
-        }
+        const result = await listWardrobeItems({
+          userId: wardrobeOwnerId,
+          page: 1,
+          limit: 20
+        });
+        contextToUse = result.items.map((item) => ({
+          name: item.name,
+          itemType: item.itemType,
+          color: item.color,
+          style: item.style,
+          tags: item.tags || []
+        }));
       } catch (error) {
-        // If database fetch fails, continue without context
         console.log('Could not fetch wardrobe context:', error.message);
       }
     }
 
-    const resolvedProfileImage = profileImage || req.user?.profileImage || null;
-    const result = await chatWithAI(message, contextToUse, conversationHistory || [], resolvedProfileImage);
+    const safeHistory = Array.isArray(conversationHistory)
+      ? conversationHistory.slice(-20).map((entry) => ({
+        role: entry?.role === 'assistant' ? 'assistant' : 'user',
+        content: String(entry?.content || '').slice(0, 2000)
+      }))
+      : [];
+    const resolvedProfileImage = profileImage || await resolveStoredImageDataUrl(req.user?.profileImage) || null;
+    const result = await chatWithAI(message.trim(), contextToUse, safeHistory, resolvedProfileImage);
 
     if (result.success) {
       res.json({
@@ -109,7 +131,7 @@ router.post('/chat', authenticate, async (req, res) => {
  * Virtual try-on: place garment on user's photo
  * Requires: garment image (field "image"), user photo (field "userPhoto" or "userPhotoBase64")
  */
-router.post('/try-on', authenticate, upload.fields([
+router.post('/try-on', optionalAuthenticate, upload.fields([
   { name: 'image', maxCount: 1 },
   { name: 'userPhoto', maxCount: 1 }
 ]), async (req, res) => {
@@ -135,7 +157,7 @@ router.post('/try-on', authenticate, upload.fields([
 
     if (!userPhoto) {
       if (req.user?.profileImage) {
-        userPhoto = req.user.profileImage;
+        userPhoto = await resolveStoredImageDataUrl(req.user.profileImage);
       }
     }
 
@@ -156,6 +178,7 @@ router.post('/try-on', authenticate, upload.fields([
       res.json({
         success: true,
         image: result.image,
+        previewUrl: result.image,
         message: "Here's how you'd look!"
       });
     } else {
@@ -174,10 +197,50 @@ router.post('/try-on', authenticate, upload.fields([
 });
 
 /**
+ * POST /api/ai/generate-image
+ * Generate an image from a text prompt
+ */
+router.post('/generate-image', optionalAuthenticate, async (req, res) => {
+  try {
+    const prompt = String(req.body?.prompt || '').trim();
+    if (!prompt || prompt.length > 2000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Prompt must be between 1 and 2000 characters.'
+      });
+    }
+
+    const result = await generateImageFromPrompt(prompt, {
+      steps: req.body?.steps,
+      seed: req.body?.seed
+    });
+
+    if (!result.success) {
+      return res.status(502).json({
+        success: false,
+        error: result.error || 'Image generation failed'
+      });
+    }
+
+    return res.json({
+      success: true,
+      image: result.image,
+      model: result.model
+    });
+  } catch (error) {
+    console.error('Generate image route error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to generate image'
+    });
+  }
+});
+
+/**
  * POST /api/ai/analyze-image
  * Analyze clothing image and extract tags
  */
-router.post('/analyze-image', authenticate, upload.single('image'), async (req, res) => {
+router.post('/analyze-image', optionalAuthenticate, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -194,6 +257,7 @@ router.post('/analyze-image', authenticate, upload.single('image'), async (req, 
     if (result.success) {
       res.json({
         success: true,
+        item: result.tags,
         tags: result.tags,
         ...(process.env.NODE_ENV !== 'production' && (req.body?.debug === 'true' || req.query?.debug === 'true')
           ? { rawResponse: result.rawResponse }
@@ -219,28 +283,37 @@ router.post('/analyze-image', authenticate, upload.single('image'), async (req, 
  * Get outfit recommendations from wardrobe
  * Can use wardrobe items from request OR fetch from database (if authenticated)
  */
-router.post('/recommendations', authenticate, async (req, res) => {
+router.post('/recommendations', optionalAuthenticate, async (req, res) => {
   try {
     const { wardrobeItems, occasion, bodyShape, weather, useDatabase } = req.body;
 
     // If useDatabase is true and user is authenticated, fetch from DB
     let itemsToUse = wardrobeItems;
-    if (useDatabase && req.user) {
-      const WardrobeItem = require('../models/WardrobeItem');
-      const User = require('../models/User');
-      
-      const user = await User.findById(req.user._id);
-      
-      // Check recommendation limit for free tier
-      if (!user.canGetRecommendation()) {
+    let recommendationUser = null;
+    if (useDatabase) {
+      const ownerId = getWardrobeOwnerId(req);
+      if (!ownerId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required to use the personal wardrobe database.'
+        });
+      }
+
+      recommendationUser = isSharedWardrobeEnabled() || !req.user ? null : await getUserById(req.user._id);
+
+      if (recommendationUser && !(await canUserGetRecommendation(recommendationUser))) {
         return res.status(403).json({
           success: false,
           error: 'Recommendation limit reached. Upgrade to premium for unlimited recommendations.'
         });
       }
 
-      const dbItems = await WardrobeItem.find({ userId: req.user._id });
-      itemsToUse = dbItems.map(item => ({
+      const dbItems = await listWardrobeItems({
+        userId: ownerId,
+        page: 1,
+        limit: 100
+      });
+      itemsToUse = dbItems.items.map((item) => ({
         name: item.name,
         tags: item.tags,
         itemType: item.itemType,
@@ -249,8 +322,6 @@ router.post('/recommendations', authenticate, async (req, res) => {
         occasion: item.occasion
       }));
 
-      // Increment recommendation count
-      await user.incrementRecommendationCount();
     }
 
     if (!itemsToUse || !Array.isArray(itemsToUse) || itemsToUse.length === 0) {
@@ -260,21 +331,32 @@ router.post('/recommendations', authenticate, async (req, res) => {
       });
     }
 
-    if (!occasion) {
+    itemsToUse = itemsToUse.slice(0, 100).map((item) => ({
+      name: String(item?.name || 'Item').slice(0, 200),
+      tags: Array.isArray(item?.tags) ? item.tags.map(String).slice(0, 20) : [],
+      itemType: String(item?.itemType || '').slice(0, 100),
+      color: String(item?.color || '').slice(0, 100),
+      style: String(item?.style || '').slice(0, 100)
+    }));
+
+    if (typeof occasion !== 'string' || !occasion.trim() || occasion.length > 200) {
       return res.status(400).json({
         success: false,
-        error: 'Occasion is required'
+        error: 'Occasion must be between 1 and 200 characters.'
       });
     }
 
     const result = await getOutfitRecommendations(
       itemsToUse,
-      occasion,
+      occasion.trim(),
       bodyShape || null,
       weather || null
     );
 
     if (result.success) {
+      if (recommendationUser) {
+        await incrementRecommendationCount(recommendationUser);
+      }
       res.json({
         success: true,
         outfits: result.outfits,
@@ -301,7 +383,7 @@ router.post('/recommendations', authenticate, async (req, res) => {
  * POST /api/ai/rate-item
  * Rate/style score a clothing item
  */
-router.post('/rate-item', authenticate, upload.single('image'), async (req, res) => {
+router.post('/rate-item', optionalAuthenticate, upload.single('image'), async (req, res) => {
   try {
     const { itemDescription, bodyShape } = req.body;
     const itemImage = req.file ? req.file.buffer : null;
@@ -322,8 +404,7 @@ router.post('/rate-item', authenticate, upload.single('image'), async (req, res)
     if (result.success) {
       res.json({
         success: true,
-        rating: result.rating,
-        rawResponse: result.rawResponse
+        rating: result.rating
       });
     } else {
       res.status(500).json({

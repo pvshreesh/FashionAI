@@ -16,5 +16,5 @@ if (Test-Path $envFile) {
 
 Copy-Item $exampleFile $envFile
 Write-Host "Created .env from template." -ForegroundColor Green
-Write-Host "Edit code/backend/.env and add your real values (DATABASE_URL, etc.)" -ForegroundColor Yellow
+Write-Host "Edit code/backend/.env and add your real Cognito, DynamoDB, S3, and Gemini values." -ForegroundColor Yellow
 Write-Host "Never commit .env - it is gitignored." -ForegroundColor Cyan
